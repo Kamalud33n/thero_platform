@@ -1,0 +1,735 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reports - RehabAI</title>
+    <script src="/static/auth-bridge.js"></script>
+    <link rel="stylesheet" href="/static/style.css?v=2">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="/static/chart.umd.min.js"></script>
+    <style>
+        .canvas-wrapper-lg {
+            position: relative;
+            width: 100%;
+            height: 280px;
+            flex-shrink: 0;
+        }
+        .canvas-wrapper-lg canvas {
+            position: absolute !important;
+            top: 0; left: 0;
+            width: 100% !important;
+            height: 100% !important;
+        }
+        @media (max-width: 768px) {
+            .canvas-wrapper    { height: 180px; }
+            .canvas-wrapper-lg { height: 220px; }
+        }
+        @media (max-width: 480px) {
+            .canvas-wrapper    { height: 150px; }
+            .canvas-wrapper-lg { height: 180px; }
+        }
+        .no-data-msg {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: var(--text-light);
+            font-size: 14px;
+            gap: 8px;
+        }
+        .no-data-msg i { font-size: 32px; }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar glass-effect">
+            <div class="sidebar-header">
+                <div class="logo-container">
+                    <img class="logo-icon" src="/assets/logo.png?v=2" alt="MedNova logo" width="44" height="44">
+                    <div class="logo-text">
+                        <span class="logo-title">MedNova</span>
+                        <span class="logo-subtitle">Therapy System</span>
+                    </div>
+                </div>
+            </div>
+            <nav class="sidebar-nav">
+                <a href="/analytics" class="nav-item"><i class="fas fa-chart-line"></i><span>Analysis</span></a>
+                <a href="/patients"  class="nav-item"><i class="fas fa-users"></i><span>Patients</span></a>
+                <a href="/session"   class="nav-item"><i class="fas fa-video"></i><span>Start Session</span></a>
+                <a href="/reports"   class="nav-item active"><i class="fas fa-file-alt"></i><span>Reports</span></a>
+            </nav>
+            <div class="sidebar-footer">
+                <div class="status-indicator">
+                    <span class="status-dot online"></span>
+                    <span class="status-text">System Online</span>
+                </div>
+                <div class="version-info">v2.0.0</div>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <header class="top-bar glass-effect">
+                <div class="top-bar-left">
+                    <button class="menu-toggle" id="menuToggle"><i class="fas fa-bars"></i></button>
+                    <div class="breadcrumb">
+                        <span>Home</span>
+                        <i class="fas fa-chevron-right"></i>
+                        <span class="active">Reports</span>
+                    </div>
+                </div>
+                <div class="top-bar-right">
+                    <div class="status-badge">
+                        <span class="badge-dot"></span>
+                        <span>AI Ready</span>
+                    </div>
+                    <div class="camera-status">
+                        <i class="fas fa-camera"></i>
+                        <span>Disconnected</span>
+                    </div>
+                    <button class="logout-btn" onclick="handleLogout()">
+                        <i class="fas fa-sign-out-alt"></i>
+                    </button>
+                </div>
+            </header>
+
+            <div class="content-area">
+
+                <div class="reports-header">
+                    <div class="header-left">
+                        <h2>Reports & Analytics</h2>
+                        <p class="header-subtitle">Generate and view comprehensive patient reports</p>
+                    </div>
+                    <div class="header-right">
+                        <div class="report-filters">
+                            <select id="reportPatientSelect" class="glass-select" onchange="onPatientChange()">
+                                <option value="">Select Patient</option>
+                            </select>
+                            <select id="reportTypeSelect" class="glass-select" onchange="onReportTypeChange()">
+                                <option value="last_session">Last Session</option>
+                                <option value="weekly">Weekly Report</option>
+                                <option value="monthly">Monthly Report</option>
+                                <option value="history">Full History</option>
+                                <option value="custom">Custom Range</option>
+                            </select>
+                            <input type="date" id="reportStartDate" class="glass-select" style="display:none">
+                            <input type="date" id="reportEndDate" class="glass-select" style="display:none">
+                            <button class="btn-primary" onclick="generateReport()">
+                                <i class="fas fa-file-pdf"></i> Generate PDF
+                            </button>
+                            <button class="btn-secondary" onclick="downloadLastSessionReport()" title="Quick download — most recent session only">
+                                <i class="fas fa-download"></i> Last Session
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Progress Chart — real data from /api/sessions/{id} -->
+                <div class="chart-container glass-effect animate-slide-up">
+                    <div class="chart-header">
+                        <h3>Patient Progress Analysis</h3>
+                        <div class="chart-controls">
+                            <button class="chart-btn active" data-period="all">All</button>
+                            <button class="chart-btn" data-period="month">Month</button>
+                            <button class="chart-btn" data-period="week">Week</button>
+                        </div>
+                    </div>
+                    <div class="canvas-wrapper-lg">
+                        <canvas id="progressChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- Comparison Charts -->
+                <div class="charts-row">
+                    <div class="chart-container glass-effect animate-slide-up">
+                        <div class="chart-header"><h3>Accuracy Comparison</h3></div>
+                        <div class="canvas-wrapper">
+                            <canvas id="accuracyComparisonChart"></canvas>
+                        </div>
+                    </div>
+                    <div class="chart-container glass-effect animate-slide-up">
+                        <div class="chart-header"><h3>ROM Comparison</h3></div>
+                        <div class="canvas-wrapper">
+                            <canvas id="romComparisonChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- AI Recommendations -->
+                <div class="recommendations glass-effect animate-slide-up">
+                    <div class="recommendations-header">
+                        <h3><i class="fas fa-robot"></i> AI Recommendations</h3>
+                        <span class="recommendation-badge">Auto-generated</span>
+                    </div>
+                    <div class="recommendations-list" id="recommendationsList">
+                        <div class="recommendation-item">
+                            <i class="fas fa-info-circle" style="color:#3E6FD9"></i>
+                            <span>Select a patient to see personalized recommendations.</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Patient-specific Report History -->
+                <div class="recommendations glass-effect animate-slide-up" id="patientReportHistory" style="display:none">
+                </div>
+
+                <!-- Report History -->
+                <div class="report-history glass-effect animate-slide-up">
+                    <div class="section-header">
+                        <h3>Generated Reports</h3>
+                        <button class="btn-secondary" onclick="loadReportHistory()">
+                            <i class="fas fa-sync"></i> Refresh
+                        </button>
+                    </div>
+                    <div class="table-container">
+                        <table class="report-table">
+                            <thead>
+                                <tr>
+                                    <th>Patient</th>
+                                    <th>Sessions</th>
+                                    <th>Avg Accuracy</th>
+                                    <th>Avg ROM</th>
+                                    <th>Recovery Score</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="reportHistoryBody">
+                                <tr><td colspan="6" class="text-center">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+            </div>
+        </main>
+    </div>
+
+    <script src="/static/app.js"></script>
+    <script>
+    // State
+    let _progressChart   = null;
+    let _accChart        = null;
+    let _romChart        = null;
+    let _allSessions     = [];   // current patient's sessions
+    let _dashData        = null; // global dashboard data
+    let _activePeriod    = 'all';
+
+    // Boot
+    document.addEventListener('DOMContentLoaded', async () => {
+        document.getElementById('menuToggle')?.addEventListener('click', () =>
+            document.querySelector('.sidebar').classList.toggle('active'));
+
+        bindPeriodButtons();
+
+        await Promise.all([
+            loadPatients(),
+            loadDashboard(),
+        ]);
+
+        loadReportHistory();
+    });
+
+    // Load global dashboard data 
+    async function loadDashboard() {
+        try {
+            const r = await fetch('/api/dashboard');
+            _dashData = await r.json();
+            // Draw global charts (no patient selected yet)
+            drawProgressChart(_dashData.progress || [], _activePeriod);
+            drawComparisonCharts(_dashData);
+            showGlobalRecommendations(_dashData);
+        } catch(e) { console.error('loadDashboard:', e); }
+    }
+
+    // Load patients dropdown 
+    async function loadPatients() {
+        try {
+            const patients = await (await fetch('/api/patients')).json();
+            const sel = document.getElementById('reportPatientSelect');
+            patients.forEach(p => {
+                const o = document.createElement('option');
+                o.value = p.id;
+                o.textContent = p.name;
+                sel.appendChild(o);
+            });
+        } catch(e) { console.error('loadPatients:', e); }
+    }
+
+    // Patient changed → load that patient's sessions 
+    async function onPatientChange() {
+        const pid = document.getElementById('reportPatientSelect').value;
+        if (!pid) {
+            // revert to global
+            _allSessions = [];
+            drawProgressChart(_dashData?.progress || [], _activePeriod);
+            drawComparisonCharts(_dashData);
+            showGlobalRecommendations(_dashData);
+            loadPatientReportHistory('');
+            return;
+        }
+
+        try {
+            const sessions = await (await fetch(`/api/sessions/${pid}`)).json();
+            _allSessions = sessions;
+            drawProgressChart(sessionsToProgress(sessions), _activePeriod);
+            drawPatientComparison(sessions);
+            showPatientRecommendations(sessions);
+        } catch(e) { console.error('onPatientChange:', e); }
+
+        loadPatientReportHistory(pid);
+    }
+
+    // Convert session array → progress format 
+    function sessionsToProgress(sessions) {
+        return sessions.map(s => ({
+            date:      (s.start_time || '').slice(0, 10),
+            accuracy:  s.accuracy_percentage  || 0,
+            rom:       s.average_rom           || 0,
+            stability: s.stability_score       || 0,
+            exercise:  s.exercise_type         || '',
+        }));
+    }
+
+    // Period filter buttons
+    function bindPeriodButtons() {
+        document.querySelectorAll('.chart-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.chart-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                _activePeriod = btn.dataset.period;
+
+                const pid = document.getElementById('reportPatientSelect').value;
+                const src = pid
+                    ? sessionsToProgress(_allSessions)
+                    : (_dashData?.progress || []);
+                drawProgressChart(src, _activePeriod);
+            });
+        });
+    }
+
+    // Progress line chart 
+    function drawProgressChart(progress, period) {
+        // Filter by period
+        const now = new Date();
+        const days = period === 'week' ? 7 : period === 'month' ? 30 : 9999;
+        const filtered = progress
+            .filter(r => (now - new Date(r.date)) / 86400000 <= days)
+            .sort((a, b) => new Date(a.date) - new Date(b.date));
+
+        const labels   = filtered.map(r => r.date.slice(5));  // MM-DD
+        const accData  = filtered.map(r => r.accuracy);
+        const romData  = filtered.map(r => r.rom);
+        const stabData = filtered.map(r => r.stability);
+
+        if (_progressChart) {
+            _progressChart.data.labels = labels;
+            _progressChart.data.datasets[0].data = accData;
+            _progressChart.data.datasets[1].data = romData;
+            _progressChart.data.datasets[2].data = stabData;
+            _progressChart.update();
+            return;
+        }
+
+        const ctx = document.getElementById('progressChart').getContext('2d');
+        _progressChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels,
+                datasets: [
+                    { label:'Accuracy %',  data: accData,
+                      borderColor:'#1D8A6D', backgroundColor:'rgba(29,138,109,0.1)',
+                      tension:0.4, fill:true, borderWidth:2, pointRadius:4,
+                      pointBackgroundColor:'#1D8A6D', pointBorderColor:'#fff', pointBorderWidth:2 },
+                    { label:'ROM °',       data: romData,
+                      borderColor:'#3E6FD9', backgroundColor:'rgba(59,91,165,0.1)',
+                      tension:0.4, fill:true, borderWidth:2, pointRadius:4,
+                      pointBackgroundColor:'#3E6FD9', pointBorderColor:'#fff', pointBorderWidth:2 },
+                    { label:'Stability %', data: stabData,
+                      borderColor:'#D68F35', backgroundColor:'rgba(168,120,46,0.1)',
+                      tension:0.4, fill:true, borderWidth:2, pointRadius:4,
+                      pointBackgroundColor:'#D68F35', pointBorderColor:'#fff', pointBorderWidth:2 },
+                ]
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                layout: { padding: { top: 12, right: 8 } },
+                plugins: {
+                    legend: { display:true, position:'top',
+                        labels:{ usePointStyle:true, pointStyle:'circle', padding:20, font:{size:12} } },
+                    tooltip: tooltipStyle()
+                },
+                scales: {
+                    y: { beginAtZero:true, max:100,
+                         grid:{color:'rgba(0,0,0,0.04)'},
+                         ticks:{callback: v => v+'', font:{size:11}} },
+                    x: { grid:{display:false}, ticks:{font:{size:11}, maxRotation:45} }
+                },
+                interaction: { intersect:false, mode:'index' }
+            }
+        });
+    }
+
+    // Comparison charts — global (weekly vs monthly from dashboard) 
+    function drawComparisonCharts(data) {
+        if (!data) return;
+        const w = data.weekly  || {};
+        const m = data.monthly || {};
+        const s = data.statistics || {};
+
+        const accLabels = ['This Week', 'This Month', 'Overall'];
+        const accVals   = [w.accuracy || 0, m.accuracy || 0, s.avg_accuracy || 0];
+
+        const romLabels = ['This Week', 'This Month', 'Overall'];
+        const romVals   = [w.rom || 0, m.rom || 0, s.avg_rom || 0];
+
+        _accChart = buildBarChart(
+            'accuracyComparisonChart', _accChart,
+            accLabels, accVals, 'Accuracy (%)',
+            v => v + '%', 100,
+            ['rgba(29,138,109,0.8)','rgba(59,91,165,0.8)','rgba(122,92,142,0.8)'],
+            ['#1D8A6D','#3E6FD9','#8B5FC7']
+        );
+
+        _romChart = buildBarChart(
+            'romComparisonChart', _romChart,
+            romLabels, romVals, 'ROM (°)',
+            v => v + '°', 120,
+            ['rgba(29,138,109,0.8)','rgba(59,91,165,0.8)','rgba(122,92,142,0.8)'],
+            ['#1D8A6D','#3E6FD9','#8B5FC7']
+        );
+    }
+
+    // Comparison charts — per patient (split sessions into thirds) 
+    function drawPatientComparison(sessions) {
+        if (!sessions.length) return;
+
+        const sorted = [...sessions].sort((a,b) => new Date(a.start_time) - new Date(b.start_time));
+        const n = sorted.length;
+
+        // Split into up to 4 buckets: first quarter, mid, last quarter, current
+        function avg(arr, key) {
+            return arr.length ? arr.reduce((s,x) => s + (x[key]||0), 0) / arr.length : 0;
+        }
+
+        const q = Math.max(1, Math.floor(n / 4));
+        const buckets = [
+            { label: 'Start',    data: sorted.slice(0, q) },
+            { label: 'Early',    data: sorted.slice(q, q*2) },
+            { label: 'Mid',      data: sorted.slice(q*2, q*3) },
+            { label: 'Current',  data: sorted.slice(q*3) },
+        ].filter(b => b.data.length > 0);
+
+        const labels  = buckets.map(b => b.label);
+        const accVals = buckets.map(b => +avg(b.data, 'accuracy_percentage').toFixed(1));
+        const romVals = buckets.map(b => +avg(b.data, 'average_rom').toFixed(1));
+
+        const bgColors = [
+            'rgba(244,67,54,0.8)', 'rgba(168,120,46,0.8)',
+            'rgba(59,91,165,0.8)', 'rgba(29,138,109,0.8)'
+        ].slice(0, labels.length);
+        const bdColors = ['#D9503E','#D68F35','#3E6FD9','#1D8A6D'].slice(0, labels.length);
+
+        _accChart = buildBarChart(
+            'accuracyComparisonChart', _accChart,
+            labels, accVals, 'Accuracy (%)', v => v+'%', 100, bgColors, bdColors);
+
+        _romChart = buildBarChart(
+            'romComparisonChart', _romChart,
+            labels, romVals, 'ROM (°)', v => v+'°', 120, bgColors, bdColors);
+    }
+
+    // Bar chart builder (create or update) 
+    function buildBarChart(id, existing, labels, data, label, tickCb, maxY, bgColors, bdColors) {
+        if (existing) {
+            existing.data.labels = labels;
+            existing.data.datasets[0].data            = data;
+            existing.data.datasets[0].backgroundColor = bgColors;
+            existing.data.datasets[0].borderColor     = bdColors;
+            existing.update();
+            return existing;
+        }
+        const ctx = document.getElementById(id)?.getContext('2d');
+        if (!ctx) return null;
+        return new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels,
+                datasets: [{
+                    label, data,
+                    backgroundColor: bgColors,
+                    borderColor:     bdColors,
+                    borderWidth: 2, borderRadius: 6
+                }]
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                layout: { padding: { top: 12 } },
+                plugins: { legend:{display:false}, tooltip: tooltipStyle() },
+                scales: {
+                    y: { beginAtZero:true, max: maxY,
+                         grid:{color:'rgba(0,0,0,0.04)'},
+                         ticks:{callback: tickCb, font:{size:11}} },
+                    x: { grid:{display:false}, ticks:{font:{size:11}} }
+                }
+            }
+        });
+    }
+
+    // Recommendations 
+    function showGlobalRecommendations(data) {
+        if (!data) return;
+        const s    = data.statistics || {};
+        const recs = generateRecs(s.avg_accuracy, s.avg_rom, s.recovery_score, data.progress?.length || 0);
+        renderRecs(recs);
+    }
+
+    function showPatientRecommendations(sessions) {
+        if (!sessions.length) {
+            renderRecs(['No sessions yet — start the first session to see recommendations.']);
+            return;
+        }
+        const n      = sessions.length;
+        const avgAcc = sessions.reduce((s,x) => s + (x.accuracy_percentage||0), 0) / n;
+        const avgRom = sessions.reduce((s,x) => s + (x.average_rom||0), 0) / n;
+        const recScr = sessions.reduce((s,x) => s + (x.recovery_score||0), 0) / n;
+        renderRecs(generateRecs(avgAcc, avgRom, recScr, n));
+    }
+
+    function generateRecs(avgAcc, avgRom, recScore, sessionCount) {
+        const recs = [];
+        if (avgAcc  < 70)  recs.push({ icon:'fa-bullseye',      color:'#D9503E', text:'Focus on movement accuracy — try slower, controlled repetitions.' });
+        if (avgRom  < 60)  recs.push({ icon:'fa-arrows-alt-h',  color:'#D68F35', text:'Increase range of motion with gentle stretching before each session.' });
+        if (recScore < 50) recs.push({ icon:'fa-heartbeat',     color:'#8B5FC7', text:'Consider increasing session frequency to 3–4 times per week.' });
+        if (sessionCount < 5) recs.push({ icon:'fa-calendar-check', color:'#3E6FD9', text:'Aim for at least 10 sessions before re-evaluation.' });
+        if (avgAcc >= 85 && avgRom >= 80)
+            recs.push({ icon:'fa-star', color:'#1D8A6D', text:'Excellent progress! Consider introducing advanced functional exercises.' });
+        else if (avgAcc >= 70 && avgRom >= 70)
+            recs.push({ icon:'fa-thumbs-up', color:'#1D8A6D', text:'Good progress — maintain current routine and gradually increase intensity.' });
+        if (!recs.length)
+            recs.push({ icon:'fa-check-circle', color:'#1D8A6D', text:'Continue current therapy plan. Regular monitoring recommended.' });
+        return recs;
+    }
+
+    function renderRecs(recs) {
+        document.getElementById('recommendationsList').innerHTML = recs.map(r => {
+            if (typeof r === 'string') {
+                return `<div class="recommendation-item animate-slide-up">
+                    <i class="fas fa-info-circle" style="color:#3E6FD9"></i>
+                    <span>${r}</span></div>`;
+            }
+            return `<div class="recommendation-item animate-slide-up">
+                <i class="fas ${r.icon}" style="color:${r.color}"></i>
+                <span>${r.text}</span></div>`;
+        }).join('');
+    }
+
+    // Report history table — show all patients summary 
+    async function loadReportHistory() {
+        const tbody = document.getElementById('reportHistoryBody');
+        tbody.innerHTML = '<tr><td colspan="6" class="text-center"><i class="fas fa-spinner fa-spin"></i> Loading...</td></tr>';
+        try {
+            const patients = await (await fetch('/api/patients')).json();
+            if (!patients.length) {
+                tbody.innerHTML = '<tr><td colspan="6" class="text-center">No patients found</td></tr>';
+                return;
+            }
+            tbody.innerHTML = patients.map(p => {
+                const accColor = p.avg_accuracy >= 80 ? '#1D8A6D' : p.avg_accuracy >= 60 ? '#D68F35' : '#D9503E';
+                return `<tr>
+                    <td><strong>${p.name}</strong><br>
+                        <small style="color:var(--text-light)">${p.diagnosis || '—'}</small></td>
+                    <td class="text-center">${p.sessions_count ?? 0}</td>
+                    <td class="text-center" style="color:${accColor};font-weight:600">
+                        ${p.avg_accuracy ?? 0}%</td>
+                    <td class="text-center">—</td>
+                    <td class="text-center">
+                        <span class="status-badge ${p.is_active ? 'active' : 'inactive'}">
+                            ${p.is_active ? 'Active' : 'Inactive'}</span></td>
+                    <td class="text-center">
+                        <button class="btn-icon" title="Generate PDF"
+                            onclick="generatePatientReport('${p.id}','${p.name.replace(/'/g,"\\'")}')">
+                            <i class="fas fa-file-pdf"></i>
+                        </button>
+                        <button class="btn-icon" title="View in charts"
+                            onclick="selectPatient('${p.id}')">
+                            <i class="fas fa-chart-line"></i>
+                        </button>
+                    </td>
+                </tr>`;
+            }).join('');
+        } catch(e) {
+            tbody.innerHTML = '<tr><td colspan="6" class="text-center" style="color:red">Failed to load</td></tr>';
+        }
+    }
+
+    // Select patient from table
+    async function selectPatient(pid) {
+        const sel = document.getElementById('reportPatientSelect');
+        sel.value = pid;
+        await onPatientChange();
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    // Show/hide the from-to date pickers depending on report type
+    function onReportTypeChange() {
+        const type    = document.getElementById('reportTypeSelect').value;
+        const isCustom = type === 'custom';
+        document.getElementById('reportStartDate').style.display = isCustom ? '' : 'none';
+        document.getElementById('reportEndDate').style.display   = isCustom ? '' : 'none';
+    }
+
+    // Generate PDF 
+    function generateReport() {
+        const pid  = document.getElementById('reportPatientSelect').value;
+        const type = document.getElementById('reportTypeSelect').value;
+        if (!pid) { showToast('Please select a patient', 'error'); return; }
+
+        if (type === 'custom') {
+            const start = document.getElementById('reportStartDate').value;
+            const end   = document.getElementById('reportEndDate').value;
+            if (!start || !end) { showToast('Please pick both from and to dates', 'error'); return; }
+            if (start > end) { showToast('From date must be before To date', 'error'); return; }
+            generatePatientReport(pid, '', type, start, end);
+            return;
+        }
+        generatePatientReport(pid, '', type);
+    }
+
+    // Quick one-click download of just the most recent session's report,
+    // regardless of whatever report type is currently selected in the dropdown.
+    function downloadLastSessionReport() {
+        const pid = document.getElementById('reportPatientSelect').value;
+        if (!pid) { showToast('Please select a patient', 'error'); return; }
+        generatePatientReport(pid, '', 'last_session');
+    }
+
+    async function generatePatientReport(pid, name, type = 'weekly', startDate = null, endDate = null) {
+        showToast(`Generating report${name ? ' for ' + name : ''}...`, 'success');
+        try {
+            let url = `/api/reports/${pid}?report_type=${type}`;
+            if (type === 'custom' && startDate && endDate) {
+                url += `&start_date=${startDate}&end_date=${endDate}`;
+            }
+            const res = await fetch(url);
+            if (!res.ok) {
+                let msg = `Report generation failed (${res.status})`;
+                try { msg = (await res.json()).detail || msg; } catch (_) {}
+                showToast(msg, 'error');
+                return;
+            }
+            const blob = await res.blob();
+            const fnameSuffix = type === 'custom' ? `${startDate}_to_${endDate}` : type;
+            downloadBlob(blob, `report_${pid}_${fnameSuffix}.pdf`);
+            showToast('Report downloaded', 'success');
+
+            // Refresh history list if this patient's history is currently shown
+            if (document.getElementById('reportPatientSelect').value === pid) {
+                loadPatientReportHistory(pid);
+            }
+        } catch (e) {
+            console.error('generatePatientReport:', e);
+            showToast('Could not reach server to generate report', 'error');
+        }
+    }
+
+    function downloadBlob(blob, filename) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+    }
+
+    // Previously generated reports for the selected patient
+    async function loadPatientReportHistory(pid) {
+        const box = document.getElementById('patientReportHistory');
+        if (!box) return;
+        if (!pid) { box.innerHTML = ''; box.style.display = 'none'; return; }
+        box.style.display = 'block';
+        box.innerHTML = '<div class="no-data-msg" style="height:auto;padding:12px"><i class="fas fa-spinner fa-spin"></i> Loading past reports...</div>';
+        try {
+            const reports = await (await fetch(`/api/reports/history/${pid}`)).json();
+            if (!reports.length) {
+                box.innerHTML = `<div class="no-data-msg" style="height:auto;padding:20px 12px">
+                    <svg class="empty-illustration" style="width:56px;height:56px" viewBox="0 0 96 96" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <rect x="24" y="14" width="48" height="68" rx="6" stroke="currentColor" stroke-width="2" stroke-opacity="0.5"/>
+                        <path d="M34 32h28M34 44h28M34 56h18" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-opacity="0.4"/>
+                        <circle cx="70" cy="70" r="14" fill="var(--page-bg)" stroke="currentColor" stroke-width="2" stroke-opacity="0.55"/>
+                        <path d="M70 64v6l4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-opacity="0.55"/>
+                    </svg>
+                    <span>No reports generated yet for this patient.</span>
+                </div>`;
+                return;
+            }
+            box.innerHTML = reports.map(r => `
+                <div class="recommendation-item animate-slide-up">
+                    <i class="fas fa-file-pdf" style="color:${r.available ? '#1D8A6D' : '#bbb'}"></i>
+                    <span style="flex:1">
+                        <strong style="text-transform:capitalize">${r.report_type}</strong> report
+                        — ${new Date(r.generated_date).toLocaleString()}
+                        ${r.available ? '' : '<small style="color:#D9503E"> (file missing — regenerate)</small>'}
+                    </span>
+                    <button class="btn-icon" title="${r.available ? 'Download' : 'Unavailable'}"
+                        ${r.available ? `onclick="downloadStoredReport(${r.id})"` : 'disabled'}>
+                        <i class="fas fa-download"></i>
+                    </button>
+                </div>`).join('');
+        } catch (e) {
+            console.error('loadPatientReportHistory:', e);
+                box.innerHTML = '<div class="no-data-msg" style="height:auto;padding:12px;color:var(--medical-green)"><i class="fas fa-exclamation-circle" style="color:#D9503E"></i><span style="color:var(--text-secondary)">Failed to load report history.</span></div>';
+        }
+    }
+
+    async function downloadStoredReport(reportId) {
+        try {
+            const res = await fetch(`/api/reports/file/${reportId}`);
+            if (!res.ok) {
+                let msg = `Download failed (${res.status})`;
+                try { msg = (await res.json()).detail || msg; } catch (_) {}
+                showToast(msg, 'error');
+                return;
+            }
+            const blob = await res.blob();
+            downloadBlob(blob, `report_${reportId}.pdf`);
+        } catch (e) {
+            console.error('downloadStoredReport:', e);
+            showToast('Could not reach server to download report', 'error');
+        }
+    }
+
+    // Tooltip style 
+    function tooltipStyle() {
+        return {
+            backgroundColor:'rgba(255,255,255,0.95)',
+            titleColor:'#1a2332', bodyColor:'#5a6b7c',
+            borderColor:'rgba(0,0,0,0.08)', borderWidth:1,
+            cornerRadius:12, padding:12
+        };
+    }
+
+    // Misc 
+    function handleLogout() {
+        if (confirm('Are you sure you want to logout?')) window.location.href = '/';
+    }
+
+    function showToast(message, type = 'success') {
+        document.querySelectorAll('.toast').forEach(t => t.remove());
+        const toast = document.createElement('div');
+        toast.className = `toast ${type}`;
+        toast.innerHTML = `
+            <i class="fas fa-${type === 'success' ? 'check-circle' : 'exclamation-circle'}"></i>
+            <span>${message}</span>`;
+        document.body.appendChild(toast);
+        setTimeout(() => toast.classList.add('show'), 100);
+        setTimeout(() => { toast.classList.remove('show'); setTimeout(() => toast.remove(), 300); }, 3000);
+    }
+    </script>
+</body>
+</html>

@@ -1,0 +1,1646 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Remote Session - MedNova</title>
+<link rel="stylesheet" href="/static/style.css?v=2">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+<style>
+    html, body {
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        background: #0d1117;
+    }
+    .patient-app {
+        height: 100vh;
+        height: 100dvh;
+        display: flex;
+        flex-direction: column;
+    }
+
+    /* Top bar */
+    .patient-topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px 16px;
+        z-index: 20;
+    }
+    .patient-brand { display: flex; align-items: center; gap: 8px; color: #fff; font-weight: 700; }
+    .conn-badge {
+        display: flex; align-items: center; gap: 6px;
+        padding: 5px 12px; border-radius: 20px;
+        background: rgba(255,255,255,0.12); color: #fff;
+        font-size: 12px; font-weight: 600;
+    }
+    .conn-dot { width: 8px; height: 8px; border-radius: 50%; background: #D9503E; }
+    .conn-dot.live { background: #1D8A6D; animation: pulse-dot 1.4s infinite; }
+    @keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+    /* Pre-join screen */
+    .prejoin-screen {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        padding: 24px;
+        color: #fff;
+    }
+    .prejoin-screen i.big-icon { font-size: 52px; color: var(--medical-green); margin-bottom: 18px; }
+    .prejoin-screen h2 { margin: 0 0 6px; font-size: 22px; }
+    .prejoin-screen p { color: rgba(255,255,255,0.65); margin: 0 0 26px; max-width: 320px; font-size: 14px; }
+    .join-btn {
+        background: var(--medical-green);
+        color: #06210a;
+        border: none;
+        padding: 14px 32px;
+        border-radius: 30px;
+        font-size: 15px;
+        font-weight: 700;
+        cursor: pointer;
+        display: flex; align-items: center; gap: 8px;
+        box-shadow: 0 8px 24px rgba(145,228,148,0.35);
+    }
+    .join-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .error-screen { color: #D9503E !important; }
+
+    /* Main call view */
+    .call-view { position: relative; flex: 1; display: none; background: #000; }
+    .call-view.active { display: block; }
+
+    #localVideo {
+        position: absolute; inset: 0;
+        width: 100%; height: 100%;
+        object-fit: contain;
+        transform: scaleX(-1);
+    }
+    #overlayCanvas {
+        position: absolute; inset: 0;
+        width: 100%; height: 100%;
+        transform: scaleX(-1);
+        pointer-events: none;
+    }
+
+    .doctor-pip {
+        position: absolute;
+        top: 16px; right: 16px;
+        width: 110px; height: 150px;
+        border-radius: 14px;
+        overflow: hidden;
+        background: #1a1a1a;
+        border: 2px solid rgba(255,255,255,0.25);
+        box-shadow: 0 8px 20px rgba(0,0,0,0.4);
+        z-index: 15;
+    }
+    .doctor-pip video { width: 100%; height: 100%; object-fit: cover; }
+    .doctor-pip .pip-label {
+        position: absolute; bottom: 4px; left: 6px;
+        color: #fff; font-size: 10px; font-weight: 700;
+        text-shadow: 0 1px 4px rgba(0,0,0,0.8);
+    }
+    .doctor-pip.waiting {
+        display: flex; align-items: center; justify-content: center;
+        color: rgba(255,255,255,0.5); font-size: 11px; text-align: center; padding: 6px;
+    }
+
+    .no-pose-chip {
+        position: absolute;
+        bottom: 90px; left: 50%; transform: translateX(-50%);
+        background: rgba(244,67,54,0.85); color: #fff;
+        font-size: 12px; font-weight: 600;
+        padding: 5px 14px; border-radius: 20px;
+        display: none; z-index: 15; white-space: nowrap;
+    }
+    .no-pose-chip.show { display: block; }
+    /* Item 2: amber variant — pose IS detected but the head/feet aren't
+       fully inside the frame, distinct from the red "no pose at all"
+       state above so the patient knows they just need to step back, not
+       that the camera lost them entirely. */
+    .no-pose-chip.partial { background: rgba(240,169,58,0.92); }
+
+    .control-bar {
+        position: absolute;
+        bottom: 0; left: 0; right: 0;
+        display: flex; align-items: center; justify-content: center;
+        gap: 16px;
+        padding: 18px 16px calc(18px + env(safe-area-inset-bottom));
+        background: linear-gradient(to top, rgba(0,0,0,0.75), transparent);
+        z-index: 15;
+    }
+    .ctrl-btn {
+        width: 52px; height: 52px;
+        border-radius: 50%;
+        border: none;
+        background: rgba(255,255,255,0.14);
+        color: #fff;
+        font-size: 18px;
+        display: flex; align-items: center; justify-content: center;
+        cursor: pointer;
+    }
+    .ctrl-btn.off { background: rgba(244,67,54,0.85); }
+    .ctrl-btn.leave { background: #D9503E; width: 60px; }
+
+    .ended-overlay {
+        position: fixed; inset: 0;
+        background: rgba(13,17,23,0.97);
+        display: none;
+        align-items: center; justify-content: center;
+        flex-direction: column;
+        text-align: center;
+        color: #fff;
+        z-index: 100;
+        padding: 24px;
+    }
+    .ended-overlay.active { display: flex; }
+    .ended-overlay i { font-size: 46px; color: var(--medical-green); margin-bottom: 16px; }
+
+    /* Self Training HUD — replaces the doctor-pip/mic controls when this
+       room's mode is "self_training" (patient exercises alone, no doctor
+       on the call, metrics recorded straight to their own record). */
+    .st-hud {
+        position: absolute;
+        top: 16px; left: 16px; right: 16px;
+        display: flex; gap: 8px; flex-wrap: wrap;
+        z-index: 15;
+    }
+    .st-chip {
+        background: rgba(0,0,0,0.55);
+        backdrop-filter: blur(6px);
+        border: 1px solid rgba(255,255,255,0.14);
+        border-radius: 12px;
+        padding: 8px 12px;
+        color: #fff;
+        text-align: center;
+        min-width: 64px;
+    }
+    .st-chip .st-val { font-size: 17px; font-weight: 800; line-height: 1.1; }
+    .st-chip .st-lbl { font-size: 10px; color: rgba(255,255,255,0.65); text-transform: uppercase; letter-spacing: .04em; }
+    .st-finish-btn {
+        background: var(--medical-green);
+        color: #06210a;
+        border: none;
+        padding: 12px 20px;
+        border-radius: 30px;
+        font-size: 14px;
+        font-weight: 700;
+        cursor: pointer;
+        display: flex; align-items: center; gap: 8px;
+    }
+    .st-summary { color: #fff; margin-top: 10px; }
+    .st-summary .row { display:flex; justify-content:space-between; gap:24px; font-size:13px; color:rgba(255,255,255,0.75); padding:3px 0; }
+    .st-summary .row b { color:#fff; }
+
+    /* Stop-reason sheet — shown before a session actually ends (both Remote
+       "Leave" and Self Training "Finish") so we capture WHY the patient is
+       stopping, not just that they did. Backend already has end_reason /
+       VALID_END_REASONS wired up (see telehealth.py, routers/sessions.py) —
+       this was purely a missing-UI gap. */
+    .reason-backdrop {
+        position: fixed; inset: 0;
+        background: rgba(0,0,0,0.55);
+        display: none;
+        align-items: flex-end; justify-content: center;
+        z-index: 200;
+    }
+    .reason-backdrop.active { display: flex; }
+    .reason-sheet {
+        width: 100%; max-width: 440px;
+        background: #161b22;
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 20px 20px 0 0;
+        padding: 20px 16px calc(20px + env(safe-area-inset-bottom));
+        color: #fff;
+        animation: reasonSheetUp 0.22s ease-out;
+    }
+    @keyframes reasonSheetUp { from { transform: translateY(24px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+    .reason-sheet h3 { margin: 0 0 4px; font-size: 16px; font-weight: 700; }
+    .reason-sheet p { margin: 0 0 16px; font-size: 12.5px; color: rgba(255,255,255,0.55); }
+    .reason-option {
+        width: 100%;
+        display: flex; align-items: center; gap: 12px;
+        background: rgba(255,255,255,0.06);
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 14px;
+        padding: 13px 14px;
+        margin-bottom: 8px;
+        color: #fff;
+        font-size: 14px;
+        font-weight: 600;
+        text-align: left;
+        cursor: pointer;
+    }
+    .reason-option:active { background: rgba(255,255,255,0.12); }
+    .reason-option i { width: 22px; text-align: center; font-size: 16px; }
+    .reason-option.r-completed i { color: var(--medical-green); }
+    .reason-option.r-pain i { color: #D9503E; }
+    .reason-option.r-fatigue i { color: #F0A93A; }
+    .reason-option.r-technical i { color: rgba(255,255,255,0.6); }
+    .reason-cancel {
+        width: 100%; background: none; border: none;
+        color: rgba(255,255,255,0.55); font-size: 13.5px; font-weight: 600;
+        padding: 10px; margin-top: 4px; cursor: pointer;
+    }
+</style>
+</head>
+<body>
+
+<div class="patient-app">
+
+    <div class="patient-topbar">
+        <div class="patient-brand"><img class="logo-icon" src="/assets/logo.png?v=2" alt="MedNova logo" width="44" height="44"><span>MedNova Remote Session</span></div>
+        <div class="conn-badge"><span class="conn-dot" id="connDot"></span><span id="connText">Connecting...</span></div>
+    </div>
+
+    <div class="prejoin-screen" id="prejoinScreen">
+        <i class="fas fa-video big-icon" id="prejoinIcon"></i>
+        <h2 id="prejoinTitle">Loading session...</h2>
+        <p id="prejoinSub">Please wait a moment.</p>
+        <button class="join-btn" id="joinBtn" style="display:none" onclick="joinSession()">
+            <i class="fas fa-camera"></i> Turn on Camera &amp; Join
+        </button>
+    </div>
+
+    <div class="call-view" id="callView">
+        <video id="localVideo" autoplay playsinline muted></video>
+        <canvas id="overlayCanvas"></canvas>
+
+        <div class="doctor-pip waiting" id="doctorPip">
+            <span>Waiting for<br>doctor to join...</span>
+        </div>
+
+        <!-- Self Training only — rep/accuracy/timer readout + Finish button.
+             Shown instead of the doctor-pip when ROOM_MODE === 'self_training'. -->
+        <div class="st-hud" id="stHud" style="display:none">
+            <div class="st-chip"><div class="st-val" id="stReps">0/0</div><div class="st-lbl">Reps</div></div>
+            <div class="st-chip"><div class="st-val" id="stAccuracy">0%</div><div class="st-lbl">Accuracy</div></div>
+            <div class="st-chip"><div class="st-val" id="stTimer">00:00</div><div class="st-lbl">Time</div></div>
+        </div>
+
+        <div class="no-pose-chip" id="noPoseChip"><i class="fas fa-exclamation-triangle"></i> Move into frame</div>
+
+        <div class="control-bar" id="controlBar">
+            <button class="ctrl-btn" id="micBtn" onclick="toggleMic()"><i class="fas fa-microphone"></i></button>
+            <button class="ctrl-btn" id="camBtn" onclick="toggleCam()"><i class="fas fa-video"></i></button>
+            <button class="ctrl-btn leave" onclick="leaveCall()"><i class="fas fa-phone-slash"></i></button>
+        </div>
+        <!-- Self Training only control bar — no mic/doctor concept, just finish -->
+        <div class="control-bar" id="stControlBar" style="display:none">
+            <button class="st-finish-btn" onclick="finishSelfTraining()"><i class="fas fa-check"></i> Finish Session</button>
+        </div>
+    </div>
+
+</div>
+
+<div class="reason-backdrop" id="reasonBackdrop">
+    <div class="reason-sheet">
+        <h3 id="reasonSheetTitle">Stop session?</h3>
+        <p id="reasonSheetSub">Let us know why — this helps your therapist follow up correctly.</p>
+        <button class="reason-option r-completed" onclick="pickStopReason('completed')"><i class="fas fa-check-circle"></i> I'm done with my reps</button>
+        <button class="reason-option r-pain" onclick="pickStopReason('pain')"><i class="fas fa-exclamation-triangle"></i> I'm in pain</button>
+        <button class="reason-option r-fatigue" onclick="pickStopReason('stopped_by_patient')"><i class="fas fa-battery-quarter"></i> Too tired to continue</button>
+        <button class="reason-option r-technical" onclick="pickStopReason('technical_error')"><i class="fas fa-wifi"></i> Technical issue (camera/connection)</button>
+        <button class="reason-cancel" onclick="closeReasonSheet()">Cancel</button>
+    </div>
+</div>
+
+<div class="ended-overlay" id="endedOverlay">
+    <i class="fas fa-check-circle"></i>
+    <h2 id="endedTitle">Session Ended</h2>
+    <p id="endedSub" style="color:rgba(255,255,255,0.6);max-width:320px">Your doctor has ended this session. Thank you!</p>
+    <div class="st-summary" id="stSummary" style="display:none"></div>
+</div>
+
+<script type="module">
+import { PoseLandmarker, HandLandmarker, FilesetResolver }
+    from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+
+const ROOM_ID = "{{ room_id }}";
+const TOKEN   = new URLSearchParams(window.location.search).get('token') || '';
+let ROOM_MODE = 'remote';   // 'remote' | 'self_training' — set from GET /api/telehealth/room in init()
+
+// Self Training only state — patient exercises alone, no doctor socket/call.
+// Reuses the exact same rep/stability/smoothness/balance math as Remote mode
+// (see computeAngles/updateRepCount/etc. below); the only difference is the
+// numbers are accumulated into a local timeline and POSTed once at the end,
+// instead of streamed to a doctor over signalWs.
+let selfActive       = false;
+let selfStartTime    = null;
+let selfElapsedSec   = 0;
+let selfElapsedTimer = null;
+let selfMetricsIntervalId = null;
+let selfTimeline     = [];
+const SELF_TARGET_ROM  = 90;   // matches session.html's default targetRom
+const SELF_TARGET_REPS = 10;   // matches session.html's default targetReps
+
+let localStream      = null;
+let peerConn          = null;
+let signalWs           = null;
+let _kickedByOtherDevice = false; // item 3 — set true when this tab is replaced by a newer connection
+let poseLandmarker     = null;
+let handLandmarker     = null;
+let lastHandLandmarks   = null;
+let rafId               = null;
+let usingVideoFrameCallback = false;   // requestVideoFrameCallback vs rAF fallback
+let micOn = true, camOn = true;
+let doctorAlreadyPresent = false;
+let metricsIntervalId  = null;
+let lastLandmarks       = null;
+
+// ───  Exercise config pushed by the doctor (session_config message) ──────
+let currentExerciseType = null;
+let currentTargetRom    = 90;
+
+// ─── Adaptive device tier + FPS ────────────────────────────────────────────
+// Instead of a single fixed detection/encoding rate for every device, we
+// benchmark the actual pose-model inference time on THIS device and bucket
+// it into a tier. High-end phones/laptops get full detection + video FPS;
+// low-end/older devices automatically back off so the UI stays responsive
+// and the WebRTC stream stays smooth instead of stuttering.
+//
+// Every setting below is read with a feature-detect guard where the
+// underlying browser API isn't universally supported (Safari/old Android
+// WebView gaps), so this degrades gracefully instead of throwing on any
+// device — worst case, a device just runs with un-tuned defaults.
+let deviceTier = 'mid';        // 'high' | 'mid' | 'low'
+let targetDetectFps = 20;      // pose detection loop target, adjusted after benchmark
+let targetVideoFps  = 24;      // WebRTC encoder target sent to doctor
+let lastDetectRunTime = 0;
+let DETECT_MAX_DIM_CURRENT = 240; // reassigned once tier is guessed, see below
+
+const _detectTimings = [];     // rolling ms/frame for benchmark
+let _tierCheckAccumMs = 0;
+
+const TIER_PROFILES = {
+    high: { detectFps: 30, videoFps: 30, maxBitrate: 1_500_000, detectDim: 256 },
+    mid:  { detectFps: 20, videoFps: 24, maxBitrate: 900_000,   detectDim: 240 },
+    low:  { detectFps: 12, videoFps: 15, maxBitrate: 400_000,   detectDim: 176 },
+};
+
+function quickInitialTierGuess() {
+    // Cheap heuristic before we have real timing data, so we don't start a
+    // low-end phone at full 30fps for the first couple seconds and choke it.
+    // navigator.deviceMemory is Chromium-only (undefined on Safari/Firefox) —
+    // use it when present since it's a better signal than core count alone,
+    // otherwise fall back to hardwareConcurrency (widely supported, but
+    // still undefined on some very old browsers, hence the `|| 4` default).
+    const cores = navigator.hardwareConcurrency || 4;
+    const mem   = navigator.deviceMemory || null;
+
+    if (mem) {
+        if (mem >= 6 && cores >= 6) return 'high';
+        if (mem <= 2 || cores <= 2) return 'low';
+        return 'mid';
+    }
+    if (cores >= 8) return 'high';
+    if (cores <= 2) return 'low';
+    return 'mid';
+}
+
+function applyTier(tier) {
+    if (tier === deviceTier) return;
+    deviceTier = tier;
+    const p = TIER_PROFILES[tier];
+    targetDetectFps = p.detectFps;
+    targetVideoFps  = p.videoFps;
+    DETECT_MAX_DIM_CURRENT = p.detectDim;
+    detectCanvasReady = false; // force resize on next tick at new resolution
+    console.log(`Device tier -> ${tier} (detect ${p.detectFps}fps, video ${p.videoFps}fps, dim ${p.detectDim})`);
+    applyVideoEncodingParams();
+}
+
+// Seed initial tier + targets before benchmarking kicks in
+deviceTier = quickInitialTierGuess();
+targetDetectFps = TIER_PROFILES[deviceTier].detectFps;
+targetVideoFps  = TIER_PROFILES[deviceTier].videoFps;
+DETECT_MAX_DIM_CURRENT = TIER_PROFILES[deviceTier].detectDim;
+
+// ───  Real rep-counting + stability/smoothness/balance/fatigue tracking —
+// mirrors app.py's local-session logic (_update_rep_count, _update_stability,
+// etc.) so remote sessions get the same, non-random, independently-derived
+// metrics as an in-clinic session. ──────────────────────────────────────────
+let repCount = 0, repStage = null;
+let jitterBuffer = [];      // hip-center [x,y] samples, mirrors _landmark_jitter_buffer (maxlen 20)
+let stabilityScore = 100;
+let velocityBuffer = [];    // frame-to-frame primary-angle deltas (maxlen 15)
+let lastPrimaryAngle = null;
+let smoothnessScore = 100;
+let swayBuffer = [];        // shoulder-midpoint x samples (maxlen 20)
+let balanceScore = 100;
+let repQualityBuffer = [];  // per-rep quality % (maxlen 30)
+let fatigueScore = 0;
+let lastFatigueRepCount = 0;
+
+function computePrimaryAngle(angles, exerciseType) {
+    const ex = (exerciseType || '').toLowerCase();
+    const avg = (...vals) => {
+        vals = vals.filter(v => v != null);
+        return vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : null;
+    };
+    if (ex.includes('shoulder') || ex.includes('arm')) return avg(angles.left_shoulder, angles.right_shoulder);
+    if (ex.includes('elbow'))                          return avg(angles.left_elbow, angles.right_elbow);
+    if (ex.includes('knee') || ex.includes('squat') || ex.includes('leg') || ex.includes('ankle'))
+        return avg(angles.left_knee, angles.right_knee);
+    if (ex.includes('grip') || ex.includes('finger'))
+        // Thumb excluded on purpose — see metrics.compute_grip_angle() on
+        // the backend, same reasoning applies here.
+        return avg(angles.index, angles.middle, angles.ring, angles.pinky);
+    return avg(angles.left_elbow, angles.right_elbow, angles.left_knee, angles.right_knee);
+}
+
+// ─── Hand Grip / Finger Flexion — mirrors config.py's HAND_LANDMARKS and
+// metrics.py's compute_finger_curl_angles() exactly, so a remote session
+// produces the same finger-curl numbers as an in-clinic MediaPipe-Hands
+// session. Pose's landmarks stop at the wrist, so this exercise needs the
+// separate HandLandmarker model (see initHandLandmarker() below). ─────────
+function _isHandExercise(exerciseType) {
+    const ex = (exerciseType || '').toLowerCase();
+    return ex.includes('grip') || ex.includes('finger');
+}
+
+const HAND_LM_INDEX = {
+    wrist: 0,
+    thumb_cmc: 1, thumb_mcp: 2, thumb_ip: 3, thumb_tip: 4,
+    index_mcp: 5, index_pip: 6, index_dip: 7, index_tip: 8,
+    middle_mcp: 9, middle_pip: 10, middle_dip: 11, middle_tip: 12,
+    ring_mcp: 13, ring_pip: 14, ring_dip: 15, ring_tip: 16,
+    pinky_mcp: 17, pinky_pip: 18, pinky_dip: 19, pinky_tip: 20,
+};
+
+const FINGER_TRIPLETS = {
+    thumb:  ['thumb_cmc', 'thumb_mcp', 'thumb_ip'],
+    index:  ['index_mcp', 'index_pip', 'index_dip'],
+    middle: ['middle_mcp', 'middle_pip', 'middle_dip'],
+    ring:   ['ring_mcp', 'ring_pip', 'ring_dip'],
+    pinky:  ['pinky_mcp', 'pinky_pip', 'pinky_dip'],
+};
+
+// Same named-pair connection set used by session.html's drawRemoteSkeleton()
+// so both screens draw an identical hand skeleton.
+const HAND_CONNECTIONS_NAMED = [
+    ['wrist','thumb_cmc'],['thumb_cmc','thumb_mcp'],['thumb_mcp','thumb_ip'],['thumb_ip','thumb_tip'],
+    ['wrist','index_mcp'],['index_mcp','index_pip'],['index_pip','index_dip'],['index_dip','index_tip'],
+    ['wrist','middle_mcp'],['middle_mcp','middle_pip'],['middle_pip','middle_dip'],['middle_dip','middle_tip'],
+    ['wrist','ring_mcp'],['ring_mcp','ring_pip'],['ring_pip','ring_dip'],['ring_dip','ring_tip'],
+    ['wrist','pinky_mcp'],['pinky_mcp','pinky_pip'],['pinky_pip','pinky_dip'],['pinky_dip','pinky_tip'],
+    ['index_mcp','middle_mcp'],['middle_mcp','ring_mcp'],['ring_mcp','pinky_mcp'],
+];
+
+function computeFingerCurlAngles(lm) {
+    const angles = {};
+    for (const [name, [i1, i2, i3]] of Object.entries(FINGER_TRIPLETS)) {
+        const a = lm[HAND_LM_INDEX[i1]], b = lm[HAND_LM_INDEX[i2]], c = lm[HAND_LM_INDEX[i3]];
+        if (a && b && c) angles[name] = angleBetween(a, b, c);
+    }
+    return angles;
+}
+
+function updateRepCount(primaryAngle, targetRom) {
+    if (primaryAngle == null || targetRom <= 0) return repCount;
+    const highThresh = targetRom * 0.80;
+    const lowThresh   = targetRom * 0.35;
+    if (primaryAngle >= highThresh) {
+        if (repStage === 'down') repCount++;
+        repStage = 'up';
+    } else if (primaryAngle <= lowThresh) {
+        repStage = 'down';
+    }
+    return repCount;
+}
+
+function pstdev(arr) {
+    if (arr.length < 2) return 0;
+    const mean = arr.reduce((s, v) => s + v, 0) / arr.length;
+    return Math.sqrt(arr.reduce((s, v) => s + (v - mean) ** 2, 0) / arr.length);
+}
+
+function updateStability(lm) {
+    if (!lm[23] || !lm[24]) return stabilityScore;
+    const hipX = (lm[23].x + lm[24].x) / 2;
+    const hipY = (lm[23].y + lm[24].y) / 2;
+    jitterBuffer.push([hipX, hipY]);
+    if (jitterBuffer.length > 20) jitterBuffer.shift();
+    // Was `>= 5` samples and `* 4000` — too forgiving. MediaPipe Tasks Vision's
+    // built-in temporal smoothing keeps raw hip jitter extremely small for any
+    // exercise that doesn't move the hips (i.e. almost all upper-body reps),
+    // so the score was pinning at exactly 100 the whole session. Starting
+    // from 3 samples updates sooner, and the higher multiplier (12000) makes
+    // normal postural sway actually register instead of rounding to 100.
+    if (jitterBuffer.length >= 3) {
+        const xs = jitterBuffer.map(p => p[0]);
+        const ys = jitterBuffer.map(p => p[1]);
+        const jitter = pstdev(xs) + pstdev(ys);
+        stabilityScore = Math.round(Math.max(0, Math.min(100, 100 - jitter * 12000)) * 10) / 10;
+    }
+    return stabilityScore;
+}
+
+// Hand-exercise stability: hip landmarks don't exist on a hands-only frame,
+// so anchor jitter off the wrist point instead (index 0 in HAND_LM_INDEX).
+// Same pstdev-based jitter math as updateStability, just a different anchor
+// and a smaller multiplier since a hand's natural sway is a much smaller
+// fraction of the frame than a full-body hip sway.
+function updateHandStability(handLm) {
+    const wrist = handLm[HAND_LM_INDEX.wrist];
+    if (!wrist) return stabilityScore;
+    jitterBuffer.push([wrist.x, wrist.y]);
+    if (jitterBuffer.length > 20) jitterBuffer.shift();
+    // Same recalibration as updateStability() above — was `>= 5` / `* 6000`,
+    // pinned at exactly 100 for any grip/finger exercise held reasonably
+    // steady. 3 samples + higher multiplier (18000) makes real wrist sway
+    // register instead of rounding away to 100 every time.
+    if (jitterBuffer.length >= 3) {
+        const xs = jitterBuffer.map(p => p[0]);
+        const ys = jitterBuffer.map(p => p[1]);
+        const jitter = pstdev(xs) + pstdev(ys);
+        stabilityScore = Math.round(Math.max(0, Math.min(100, 100 - jitter * 18000)) * 10) / 10;
+    }
+    return stabilityScore;
+}
+
+function updateSmoothness(primaryAngle) {
+    if (primaryAngle == null) return smoothnessScore;
+    if (lastPrimaryAngle != null) {
+        velocityBuffer.push(Math.abs(primaryAngle - lastPrimaryAngle));
+        if (velocityBuffer.length > 15) velocityBuffer.shift();
+    }
+    lastPrimaryAngle = primaryAngle;
+    if (velocityBuffer.length >= 5) {
+        const jerkVariance = pstdev(velocityBuffer);
+        smoothnessScore = Math.round(Math.max(0, Math.min(100, 100 - jerkVariance * 8)) * 10) / 10;
+    }
+    return smoothnessScore;
+}
+
+function updateBalance(lm) {
+    if (!lm[11] || !lm[12]) return balanceScore;
+    const shX = (lm[11].x + lm[12].x) / 2;
+    swayBuffer.push(shX);
+    if (swayBuffer.length > 20) swayBuffer.shift();
+    if (swayBuffer.length >= 5) {
+        const sway = pstdev(swayBuffer);
+        balanceScore = Math.round(Math.max(0, Math.min(100, 100 - sway * 5000)) * 10) / 10;
+    }
+    return balanceScore;
+}
+
+function recordRepQuality(peakAngle, targetRom) {
+    if (peakAngle == null || targetRom <= 0) return;
+    const quality = Math.max(0, Math.min(100, (peakAngle / targetRom) * 100));
+    repQualityBuffer.push(quality);
+    if (repQualityBuffer.length > 30) repQualityBuffer.shift();
+    const n = repQualityBuffer.length;
+    if (n >= 4) {
+        const half   = Math.floor(n / 2);
+        const early  = repQualityBuffer.slice(0, half);
+        const recent = repQualityBuffer.slice(half);
+        const earlyAvg  = early.reduce((s, v) => s + v, 0) / early.length;
+        const recentAvg = recent.reduce((s, v) => s + v, 0) / recent.length;
+        const decline = Math.max(0, earlyAvg - recentAvg);
+        fatigueScore = Math.round(Math.min(100, decline * 2.5) * 10) / 10;
+    }
+}
+
+function resetExerciseMetrics() {
+    repCount = 0; repStage = null;
+    jitterBuffer = []; stabilityScore = 100;
+    velocityBuffer = []; lastPrimaryAngle = null; smoothnessScore = 100;
+    swayBuffer = []; balanceScore = 100;
+    repQualityBuffer = []; fatigueScore = 0; lastFatigueRepCount = 0;
+    lastLandmarks = null; lastHandLandmarks = null;
+}
+
+const localVideo    = document.getElementById('localVideo');
+const overlayCanvas = document.getElementById('overlayCanvas');
+const overlayCtx    = overlayCanvas.getContext('2d');
+
+// ─── Low-res detection canvas — mirrors app.py's CameraManager, which
+// captures/processes at a reduced resolution instead of full resolution
+// ("halves pixel count vs 640x480, ~4x faster inference"). The <video>
+// element (shown to the patient, and sent to the doctor over WebRTC) keeps
+// its full capture quality — only the frame handed to the pose model is
+// downscaled, and now that downscale target itself adapts per device tier
+// (DETECT_MAX_DIM_CURRENT), same as the backend's dedicated low-res capture.
+const detectCanvas = document.createElement('canvas');
+const detectCtx     = detectCanvas.getContext('2d');
+let detectCanvasReady = false;
+
+function updateDetectCanvasSize() {
+    const vw = localVideo.videoWidth, vh = localVideo.videoHeight;
+    if (!vw || !vh) return;
+    const scale = DETECT_MAX_DIM_CURRENT / Math.max(vw, vh);
+    detectCanvas.width  = Math.max(1, Math.round(vw * scale));
+    detectCanvas.height = Math.max(1, Math.round(vh * scale));
+    detectCanvasReady = true;
+}
+
+// Same 6-joint scheme used on the doctor's session page (shoulder/elbow/knee, L+R)
+const JOINT_TRIPLETS = {
+    left_shoulder:  [13, 11, 23],
+    right_shoulder: [14, 12, 24],
+    left_elbow:     [11, 13, 15],
+    right_elbow:    [12, 14, 16],
+    left_knee:      [23, 25, 27],
+    right_knee:     [24, 26, 28],
+};
+
+// Landmark index map + exercise → active joints/lines filter 
+// Mirrors app.py's _KEY_LANDMARKS / _get_active_connections exactly, so the
+// remote patient view shows the SAME filtered skeleton (only the joints
+// relevant to the doctor-selected exercise) instead of the full 33-point
+// body that MediaPipe's default POSE_CONNECTIONS draws.
+const LM_INDEX = {
+    nose: 0, left_shoulder: 11, right_shoulder: 12,
+    left_elbow: 13, right_elbow: 14, left_wrist: 15, right_wrist: 16,
+    left_hip: 23, right_hip: 24,
+    left_knee: 25, right_knee: 26, left_ankle: 27, right_ankle: 28,
+};
+
+function getActiveConnections(exerciseType) {
+    const ex = (exerciseType || '').toLowerCase();
+    const LS='left_shoulder', RS='right_shoulder', LE='left_elbow', RE='right_elbow',
+          LW='left_wrist', RW='right_wrist', LH='left_hip', RH='right_hip',
+          LK='left_knee', RK='right_knee', LA='left_ankle', RA='right_ankle';
+
+    if (ex.includes('grip') || ex.includes('finger')) return HAND_CONNECTIONS_NAMED;
+    if (ex.includes('elbow'))  return [[LS,LE],[LE,LW],[RS,RE],[RE,RW]];
+    if (ex.includes('hand'))   return [[LE,LW],[RE,RW]];
+    if (ex.includes('ankle'))  return [[LK,LA],[RK,RA]];
+    if (ex.includes('knee') || ex.includes('squat') || ex.includes('leg'))
+        return [[LH,LK],[LK,LA],[RH,RK],[RK,RA]];
+    if (ex.includes('hip'))    return [[LS,LH],[RS,RH],[LH,LK],[RH,RK]];
+    if (ex.includes('shoulder') || ex.includes('arm'))
+        return [[LS,LE],[RS,RE],[LS,LH],[RS,RH]];
+    if (ex.includes('balance'))
+        return [[LS,RS],[LS,LH],[RS,RH],[LH,RH],
+                [LS,LE],[LE,LW],[RS,RE],[RE,RW],
+                [LH,LK],[LK,LA],[RH,RK],[RK,RA]];
+    // Fallback: arms + legs, no torso clutter (same as backend default)
+    return [[LS,LE],[LE,LW],[RS,RE],[RE,RW],[LH,LK],[LK,LA],[RH,RK],[RK,RA]];
+}
+
+// Contain-letterbox-aware landmark → canvas pixel transform
+// #localVideo uses `object-fit: contain` (full uncropped frame, letterboxed
+// with bars on the sides/top-bottom instead of cropping — this is what keeps
+// the patient's whole body visible instead of the old cover-crop zoomed-in-
+// on-face look) while MediaPipe's normalized landmark coords (0..1) are
+// relative to the FULL camera frame. Drawing them straight onto the canvas
+// (as DrawingUtils' default drawConnectors/drawLandmarks does) ignores the
+// letterbox offset — so the skeleton drifts away from the actual limb
+// position. This computes the same scale/offset the browser applies for
+// `contain` so dots/lines land exactly on the visible video.
+function getCoverTransform() {
+    const vw = localVideo.videoWidth, vh = localVideo.videoHeight;
+    const cw = overlayCanvas.width, ch = overlayCanvas.height;
+    if (!vw || !vh) return { offsetX: 0, offsetY: 0, drawW: cw, drawH: ch };
+    const scale = Math.min(cw / vw, ch / vh);
+    const drawW = vw * scale, drawH = vh * scale;
+    return { offsetX: (cw - drawW) / 2, offsetY: (ch - drawH) / 2, drawW, drawH };
+}
+
+function drawFilteredSkeleton(lm, exerciseType, isHand = false) {
+    const t = getCoverTransform();
+    const idxMap = isHand ? HAND_LM_INDEX : LM_INDEX;
+    const toPt = (name) => {
+        const idx = idxMap[name];
+        const p = lm[idx];
+        if (!p) return null;
+        // HandLandmarker doesn't produce a meaningful `visibility` value
+        // (it's filled as 0, not undefined) — that check is Pose-only,
+        // otherwise every hand point gets filtered out and nothing draws.
+        if (!isHand && p.visibility != null && p.visibility < 0.5) return null;
+        return [t.offsetX + p.x * t.drawW, t.offsetY + p.y * t.drawH];
+    };
+
+    const conns = getActiveConnections(exerciseType);
+    const activePoints = new Set();
+    conns.forEach(([a, b]) => { activePoints.add(a); activePoints.add(b); });
+
+    // Lines first (so dots sit on top), same style as before
+    overlayCtx.strokeStyle = '#91e494';
+    overlayCtx.lineWidth = 3;
+    conns.forEach(([a, b]) => {
+        const pa = toPt(a), pb = toPt(b);
+        if (pa && pb) {
+            overlayCtx.beginPath();
+            overlayCtx.moveTo(pa[0], pa[1]);
+            overlayCtx.lineTo(pb[0], pb[1]);
+            overlayCtx.stroke();
+        }
+    });
+
+    overlayCtx.fillStyle = '#1D8A6D';
+    activePoints.forEach((name) => {
+        const p = toPt(name);
+        if (p) {
+            overlayCtx.beginPath();
+            overlayCtx.arc(p[0], p[1], 4, 0, Math.PI * 2);
+            overlayCtx.fill();
+        }
+    });
+}
+
+(async function init() {
+    if (!ROOM_ID || !TOKEN) return showError('Invalid Link', 'This session link is missing required info.');
+
+    try {
+        const res = await fetch(`/api/telehealth/room/${ROOM_ID}?token=${encodeURIComponent(TOKEN)}`);
+        if (res.status === 410) return showError('Session Ended', 'This session link is no longer active.');
+        if (!res.ok)            return showError('Invalid Link', "We couldn't verify this session link.");
+
+        const room = await res.json();
+        ROOM_MODE = room.mode || 'remote';
+        if (room.exercise_type) currentExerciseType = room.exercise_type;
+
+        if (ROOM_MODE === 'self_training') {
+            document.querySelector('.patient-brand span').textContent = 'MedNova Self Training';
+            document.title = 'Self Training - MedNova';
+            document.getElementById('prejoinIcon').className = 'fas fa-person-running big-icon';
+            document.getElementById('prejoinTitle').textContent = `Hi ${room.patient_name || 'there'}!`;
+            const expiry = new Date(room.expires_at);
+            document.getElementById('prejoinSub').textContent =
+                (room.exercise_type ? `Your ${room.exercise_type} self-training session. ` : 'Your self-training session. ') +
+                `This link stays active until ${expiry.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}. ` +
+                `No doctor will join — just you and the camera.`;
+            document.getElementById('joinBtn').innerHTML = '<i class="fas fa-camera"></i> Start Camera &amp; Begin';
+        } else {
+            document.getElementById('prejoinIcon').className = 'fas fa-video big-icon';
+            document.getElementById('prejoinTitle').textContent = `Hi ${room.patient_name || 'there'}!`;
+            document.getElementById('prejoinSub').textContent =
+                `Your doctor${room.doctor_name ? ' ' + room.doctor_name : ''} is ready to start` +
+                (room.exercise_type ? ` your ${room.exercise_type} session.` : ' your session.');
+        }
+        document.getElementById('joinBtn').style.display = 'inline-flex';
+        setConn(false, 'Ready to join');
+    } catch (e) {
+        console.error(e);
+        showError('Connection Error', 'Could not reach the server. Check your internet and reload.');
+    }
+})();
+
+function showError(title, sub) {
+    document.getElementById('prejoinIcon').className = 'fas fa-exclamation-circle big-icon error-screen';
+    document.getElementById('prejoinTitle').textContent = title;
+    document.getElementById('prejoinSub').textContent = sub;
+    document.getElementById('joinBtn').style.display = 'none';
+    setConn(false, 'Disconnected');
+}
+
+function setConn(live, text) {
+    document.getElementById('connDot').classList.toggle('live', live);
+    document.getElementById('connText').textContent = text;
+}
+
+// ─── Camera acquisition with graceful constraint fallback ─────────────────
+// Some older Android devices / in-app WebViews reject unfamiliar constraint
+// keys (like `frameRate`) outright instead of just ignoring them. Rather
+// than let getUserMedia throw and strand the patient on a black screen, we
+// retry once with a minimal constraint set if the tuned request fails.
+async function getPatientCameraStream(idealFps, wantAudio = true) {
+    // Mirror session.html's doctor-side camera acquisition — no forced
+    // width/height/aspectRatio. Letting the browser pick its own default
+    // resolution (matching the device's native aspect) is what avoids the
+    // zoom/crop problem on both phone (portrait) and laptop/tablet
+    // (landscape) — a fixed 4:3 request was fighting the actual device
+    // aspect ratio and getting force-scaled by object-fit:cover.
+    const audio = wantAudio ? { echoCancellation: true, noiseSuppression: true } : false;
+    try {
+        return await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: 'user', frameRate: { ideal: idealFps, max: 30 } },
+            audio,
+        });
+    } catch (e) {
+        console.warn('getUserMedia with frameRate constraint failed, retrying without it:', e);
+        return await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: 'user' },
+            audio,
+        });
+    }
+}
+
+window.joinSession = async function joinSession() {
+    const btn = document.getElementById('joinBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Starting camera...';
+
+    try {
+        localStream = ROOM_MODE === 'self_training'
+            ? await getPatientCameraStream(TIER_PROFILES[deviceTier].videoFps, false)
+            : await getPatientCameraStream(TIER_PROFILES[deviceTier].videoFps);
+    } catch (e) {
+        console.error(e);
+        showError('Camera/Mic Blocked', 'Please allow camera and microphone access, then reload the page.');
+        return;
+    }
+
+    localVideo.srcObject = localStream;
+    document.getElementById('prejoinScreen').style.display = 'none';
+    document.getElementById('callView').classList.add('active');
+    resizeCanvas();
+    window.addEventListener('resize', resizeCanvas);
+
+    // Self Training: no doctor, no WebRTC peer, no signaling socket — swap
+    // the doctor-pip/mic control bar for the rep/accuracy/timer HUD and
+    // start recording locally instead.
+    if (ROOM_MODE === 'self_training') {
+        document.getElementById('doctorPip').style.display  = 'none';
+        document.getElementById('controlBar').style.display = 'none';
+        document.getElementById('stHud').style.display       = 'flex';
+        document.getElementById('stControlBar').style.display = 'flex';
+        setConn(true, 'Recording');
+        startDetectionLoop();
+        await Promise.all([initPoseLandmarker(), initHandLandmarker()]);
+        startSelfTraining();
+        return;
+    }
+
+    // Start the render/detection loop right away instead of waiting for the
+    // video's 'loadeddata' event. That event fires almost instantly (camera
+    // is already a live stream), often BEFORE initPoseLandmarker() finishes
+    // downloading the WASM runtime + model over the network — so a listener
+    // registered too late would miss it entirely, meaning the skeleton never
+    // appeared. startDetectionLoop() itself already guards on
+    // `!poseLandmarker || readyState<2` and just re-queues until both are
+    // ready, so calling it immediately here is race-free.
+    startDetectionLoop();
+
+    await Promise.all([initPoseLandmarker(), initHandLandmarker(), initPeerConnection()]);
+    connectSignaling();
+};
+
+function resizeCanvas() {
+    overlayCanvas.width  = overlayCanvas.clientWidth;
+    overlayCanvas.height = overlayCanvas.clientHeight;
+    updateDetectCanvasSize();
+}
+
+async function initPoseLandmarker() {
+    const vision = await FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
+    );
+    const modelPath =
+        "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task";
+
+    try {
+        poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+            baseOptions: { modelAssetPath: modelPath, delegate: "GPU" },
+            runningMode: "VIDEO",
+            numPoses: 1,
+        });
+    } catch (e) {
+        // Some mobile/browser combos don't support the WebGL GPU delegate —
+        // fall back to CPU instead of failing silently (pose never detects).
+        // NOTE: the CPU delegate is meaningfully slower per-frame than GPU,
+        // which is one of the biggest contributors to visible lag between
+        // real movement and the drawn skeleton on lower-end phones — this
+        // is exactly what the adaptive tier benchmark below compensates for.
+        console.warn('PoseLandmarker: GPU delegate failed, falling back to CPU (expect slower detection):', e);
+        try {
+            poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+                baseOptions: { modelAssetPath: modelPath, delegate: "CPU" },
+                runningMode: "VIDEO",
+                numPoses: 1,
+            });
+        } catch (e2) {
+            console.error('PoseLandmarker: CPU fallback also failed:', e2);
+            document.getElementById('noPoseChip').classList.add('show');
+            document.getElementById('noPoseChip').querySelector('span')?.remove();
+            document.getElementById('noPoseChip').innerHTML =
+                '<i class="fas fa-exclamation-triangle"></i> Pose model failed to load — check connection';
+        }
+    }
+}
+
+// ─── Hand Grip / Finger Flexion model — loaded in parallel with the Pose
+// model (both are small/fast at model_complexity 0-equivalent settings), so
+// switching the doctor's exercise selection mid-session between a body
+// exercise and a hand exercise doesn't need to wait on a network fetch.
+async function initHandLandmarker() {
+    const vision = await FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
+    );
+    const modelPath =
+        "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task";
+
+    try {
+        handLandmarker = await HandLandmarker.createFromOptions(vision, {
+            baseOptions: { modelAssetPath: modelPath, delegate: "GPU" },
+            runningMode: "VIDEO",
+            numHands: 1,
+        });
+    } catch (e) {
+        console.warn('HandLandmarker: GPU delegate failed, falling back to CPU:', e);
+        try {
+            handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                baseOptions: { modelAssetPath: modelPath, delegate: "CPU" },
+                runningMode: "VIDEO",
+                numHands: 1,
+            });
+        } catch (e2) {
+            console.error('HandLandmarker: CPU fallback also failed:', e2);
+            // Non-fatal — only Hand Grip/Finger Flexion is affected; every
+            // other exercise still works fine on poseLandmarker alone.
+        }
+    }
+}
+
+// ─── Detection loop driver ────────────────────────────────────────────────
+// Previously this ran purely on requestAnimationFrame (rAF), which fires on
+// the DISPLAY's refresh cycle, not the camera's actual frame arrival. On a
+// 90/120Hz phone screen that means poseLoop() can run more often than new
+// camera frames actually exist (wasted work), while on a throttled/background
+// tab rAF can also fall behind the real camera feed — both show up to the
+// user as the skeleton "lagging behind" their real movement.
+// `video.requestVideoFrameCallback()` (supported in Chrome/Edge/Safari 15.4+)
+// instead fires exactly once per NEW decoded video frame, so detection stays
+// tightly locked to what the camera is actually producing right now instead
+// of an unrelated display refresh timer. Falls back to plain rAF on older
+// browsers that don't support it.
+function startDetectionLoop() {
+    if (typeof localVideo.requestVideoFrameCallback === 'function') {
+        usingVideoFrameCallback = true;
+        localVideo.requestVideoFrameCallback(videoFrameLoop);
+    } else {
+        usingVideoFrameCallback = false;
+        rafId = requestAnimationFrame(poseLoop);
+    }
+}
+
+function videoFrameLoop() {
+    runDetectionTick();
+    localVideo.requestVideoFrameCallback(videoFrameLoop);
+}
+
+// Legacy rAF-based loop, kept as the fallback path for browsers without
+// requestVideoFrameCallback support.
+function poseLoop() {
+    runDetectionTick();
+    rafId = requestAnimationFrame(poseLoop);
+}
+
+function runDetectionTick() {
+    const handMode = _isHandExercise(currentExerciseType);
+    const activeModel = handMode ? handLandmarker : poseLandmarker;
+    if (!activeModel || localVideo.readyState < 2) return;
+
+    // Throttle to the current tier's target detection FPS. On a high-refresh
+    // display or requestVideoFrameCallback firing on every camera frame,
+    // this skips ticks rather than running the (expensive) pose model more
+    // often than the device tier says it can comfortably handle.
+    const now = performance.now();
+    const minInterval = 1000 / targetDetectFps;
+    if (now - lastDetectRunTime < minInterval) return;
+    const dt = now - lastDetectRunTime;
+    lastDetectRunTime = now;
+
+    if (!detectCanvasReady) updateDetectCanvasSize();
+    if (!detectCanvasReady) return; // video dimensions not ready this tick — try again next frame
+
+    const t0 = performance.now();
+    detectCtx.drawImage(localVideo, 0, 0, detectCanvas.width, detectCanvas.height);
+    const result = activeModel.detectForVideo(detectCanvas, performance.now());
+    const elapsed = performance.now() - t0;
+
+    // Rolling benchmark of actual model inference time — this is the real
+    // signal of device capability (independent of core count guesses), used
+    // to re-classify the tier every ~2s once enough samples are collected.
+    _detectTimings.push(elapsed);
+    if (_detectTimings.length > 30) _detectTimings.shift();
+
+    _tierCheckAccumMs += dt;
+    if (_tierCheckAccumMs >= 2000 && _detectTimings.length >= 10) {
+        _tierCheckAccumMs = 0;
+        const avgMs = _detectTimings.reduce((a, b) => a + b, 0) / _detectTimings.length;
+        if (avgMs < 15)      applyTier('high');
+        else if (avgMs < 35) applyTier('mid');
+        else                 applyTier('low');
+    }
+
+    overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+
+    if (handMode) {
+        if (result.landmarks && result.landmarks.length > 0) {
+            setNoPoseChip('hidden');
+            lastHandLandmarks = result.landmarks[0];
+            lastLandmarks = null;
+            drawFilteredSkeleton(lastHandLandmarks, currentExerciseType, true);
+        } else {
+            setNoPoseChip('none', 'Move into frame');
+            lastHandLandmarks = null;
+        }
+        return;
+    }
+
+    if (result.landmarks && result.landmarks.length > 0) {
+        const lm = result.landmarks[0];
+        lastLandmarks = lm;
+        lastHandLandmarks = null;
+
+        // Item 2: pose WAS detected, but that only means MediaPipe found a
+        // person somewhere in the shot — it says nothing about whether the
+        // whole body is actually inside frame. Standing too close/off-
+        // center can crop the head or feet out while still registering as
+        // "detected", quietly degrading every downstream angle/rep calc
+        // without the patient ever being told to back up.
+        const framing = checkFullBodyFraming(lm);
+        if (framing.full) {
+            setNoPoseChip('hidden');
+        } else {
+            setNoPoseChip('partial', framing.missing.includes('head')
+                ? 'Move back — your head is out of frame'
+                : 'Move back — your feet are out of frame');
+        }
+
+        // Only draw the joints/lines relevant to the doctor-selected
+        // exercise (matches the in-clinic session page), with coordinates
+        // corrected for the video's `object-fit: cover` crop.
+        drawFilteredSkeleton(lm, currentExerciseType);
+    } else {
+        setNoPoseChip('none', 'Move into frame');
+        lastLandmarks = null;
+    }
+}
+
+// ─── Full-body framing check (item 2) ──────────────────────────────────
+// Landmark 0 = nose (head), 27/28 = left/right ankle — MediaPipe Pose's
+// fixed 33-point layout. "In frame" means present with decent visibility
+// AND inside the normalized [0,1] canvas bounds (MediaPipe still returns
+// a landmark, with low visibility or out-of-[0,1] coords, when a point is
+// actually cropped out of the shot — it doesn't just omit it).
+// Only one ankle needs to be visible (patient may be angled to the
+// camera, e.g. for a side-view knee/hip exercise) — requiring both would
+// false-positive on perfectly normal framing.
+const FRAMING_HEAD_IDX   = 0;
+const FRAMING_ANKLE_IDXS = [27, 28];
+const FRAMING_MARGIN     = 0.02; // tolerance so an edge-of-frame landmark isn't flagged
+
+function checkFullBodyFraming(lm) {
+    const inBounds = (p) =>
+        p && (p.visibility == null || p.visibility >= 0.5) &&
+        p.x >= FRAMING_MARGIN && p.x <= 1 - FRAMING_MARGIN &&
+        p.y >= FRAMING_MARGIN && p.y <= 1 - FRAMING_MARGIN;
+
+    const missing = [];
+    if (!inBounds(lm[FRAMING_HEAD_IDX])) missing.push('head');
+    if (!FRAMING_ANKLE_IDXS.some(i => inBounds(lm[i]))) missing.push('feet');
+    return { full: missing.length === 0, missing };
+}
+
+// Single place that drives the "Move into frame" chip so the three states
+// (hidden / no pose at all / pose detected but not fully framed) can't
+// drift out of sync with each other.
+function setNoPoseChip(state, text) {
+    const chip = document.getElementById('noPoseChip');
+    if (state === 'hidden') {
+        chip.classList.remove('show', 'partial');
+        return;
+    }
+    chip.innerHTML = `<i class="fas fa-exclamation-triangle"></i> ${text}`;
+    chip.classList.toggle('partial', state === 'partial');
+    chip.classList.add('show');
+}
+
+function angleBetween(a, b, c) {
+    const v1 = { x: a.x - b.x, y: a.y - b.y, z: (a.z||0) - (b.z||0) };
+    const v2 = { x: c.x - b.x, y: c.y - b.y, z: (c.z||0) - (b.z||0) };
+    const dot = v1.x*v2.x + v1.y*v2.y + v1.z*v2.z;
+    const n1 = Math.hypot(v1.x, v1.y, v1.z), n2 = Math.hypot(v2.x, v2.y, v2.z);
+    if (!n1 || !n2) return 0;
+    const cos = Math.min(1, Math.max(-1, dot / (n1*n2)));
+    return +(Math.acos(cos) * 180 / Math.PI).toFixed(1);
+}
+
+function computeAngles(lm) {
+    const angles = {};
+    for (const [name, [i1, i2, i3]] of Object.entries(JOINT_TRIPLETS)) {
+        if (lm[i1] && lm[i2] && lm[i3]) angles[name] = angleBetween(lm[i1], lm[i2], lm[i3]);
+    }
+    return angles;
+}
+
+function startMetricsBroadcast() {
+    // Matches the in-clinic session page's /api/pose_data poll cadence
+    // (300ms) — live analytics (badges, reps, stability/smoothness/balance)
+    // update at the same cadence as an in-clinic session regardless of the
+    // device's video/detect tier.
+    metricsIntervalId = setInterval(() => {
+        if (!signalWs || signalWs.readyState !== WebSocket.OPEN) return;
+
+        if (_isHandExercise(currentExerciseType)) {
+            if (!lastHandLandmarks) {
+                signalWs.send(JSON.stringify({
+                    type: 'pose_metrics', detected: false, angles: {}, points: {},
+                    exercise_type: currentExerciseType, ts: Date.now(),
+                }));
+                return;
+            }
+
+            const angles       = computeFingerCurlAngles(lastHandLandmarks);
+            const primaryAngle = computePrimaryAngle(angles, currentExerciseType);
+            const reps         = updateRepCount(primaryAngle, currentTargetRom);
+            // Balance stays at its last value — no shoulder landmarks on a
+            // hands-only frame and there isn't a sensible hand-only stand-in
+            // for shoulder sway. Stability now uses wrist jitter instead of
+            // hip jitter, so it actually moves instead of sitting at 100.
+            updateHandStability(lastHandLandmarks);
+            const smoothness   = updateSmoothness(primaryAngle);
+
+            if (reps > lastFatigueRepCount) {
+                recordRepQuality(primaryAngle, currentTargetRom);
+                lastFatigueRepCount = reps;
+            }
+
+            const points = {};
+            Object.keys(HAND_LM_INDEX).forEach((name) => {
+                const p = lastHandLandmarks[HAND_LM_INDEX[name]];
+                if (p) points[name] = [+p.x.toFixed(4), +p.y.toFixed(4)];
+            });
+
+            signalWs.send(JSON.stringify({
+                type: 'pose_metrics',
+                detected: true,
+                angles,
+                points,
+                exercise_type: currentExerciseType,
+                primary_angle: primaryAngle,
+                reps, stability: stabilityScore, smoothness, balance: balanceScore,
+                fatigue: fatigueScore,
+                ts: Date.now(),
+            }));
+            return;
+        }
+
+        if (!lastLandmarks) {
+            signalWs.send(JSON.stringify({ type: 'pose_metrics', detected: false, angles: {}, points: {}, ts: Date.now() }));
+            return;
+        }
+
+        const angles = computeAngles(lastLandmarks);
+        const primaryAngle = computePrimaryAngle(angles, currentExerciseType);
+
+        const reps       = updateRepCount(primaryAngle, currentTargetRom);
+        const stability  = updateStability(lastLandmarks);
+        const smoothness = updateSmoothness(primaryAngle);
+        const balance    = updateBalance(lastLandmarks);
+
+        if (reps > lastFatigueRepCount) {
+            recordRepQuality(primaryAngle, currentTargetRom);
+            lastFatigueRepCount = reps;
+        }
+
+        // Send raw normalized (0..1) landmark coords for the joints that are
+        // actually being drawn for this exercise, so the DOCTOR's screen can
+        // render the same connected-dots skeleton on top of the live WebRTC
+        // video — same joints, same filter logic as _get_active_connections
+        // in app.py / getActiveConnections() below. Only the active-joint
+        // subset is sent (not all 33 points) to keep the WS payload small at
+        // a 300ms cadence.
+        const activeConns = getActiveConnections(currentExerciseType);
+        const activeJointNames = new Set();
+        activeConns.forEach(([a, b]) => { activeJointNames.add(a); activeJointNames.add(b); });
+        const points = {};
+        activeJointNames.forEach((name) => {
+            const idx = LM_INDEX[name];
+            const p = lastLandmarks[idx];
+            if (p && (p.visibility == null || p.visibility >= 0.5)) {
+                points[name] = [+p.x.toFixed(4), +p.y.toFixed(4)];
+            }
+        });
+
+        signalWs.send(JSON.stringify({
+            type: 'pose_metrics',
+            detected: true,
+            angles,
+            points,
+            exercise_type: currentExerciseType,
+            primary_angle: primaryAngle,
+            reps, stability, smoothness, balance,
+            fatigue: fatigueScore,
+            ts: Date.now(),
+        }));
+    }, 300);
+}
+
+// ─── Self Training recording loop ──────────────────────────────────────────
+// Same cadence/math as startMetricsBroadcast() above, but there's no doctor
+// on the other end — numbers are written straight into the on-screen HUD and
+// into selfTimeline, then averaged and POSTed once via finishSelfTraining().
+function startSelfTraining() {
+    selfActive     = true;
+    selfStartTime  = Date.now();
+    selfElapsedSec = 0;
+    selfTimeline   = [];
+    currentTargetRom = SELF_TARGET_ROM;
+    resetExerciseMetrics();
+
+    selfElapsedTimer = setInterval(() => {
+        selfElapsedSec++;
+        const m = String(Math.floor(selfElapsedSec / 60)).padStart(2, '0');
+        const s = String(selfElapsedSec % 60).padStart(2, '0');
+        document.getElementById('stTimer').textContent = `${m}:${s}`;
+    }, 1000);
+
+    selfMetricsIntervalId = setInterval(() => {
+        if (!selfActive) return;
+        const handMode = _isHandExercise(currentExerciseType);
+        let primaryAngle = null, accuracy = 0;
+
+        if (handMode) {
+            if (lastHandLandmarks) {
+                const angles = computeFingerCurlAngles(lastHandLandmarks);
+                primaryAngle = computePrimaryAngle(angles, currentExerciseType);
+                updateRepCount(primaryAngle, currentTargetRom);
+                updateHandStability(lastHandLandmarks);
+                updateSmoothness(primaryAngle);
+                if (repCount > lastFatigueRepCount) {
+                    recordRepQuality(primaryAngle, currentTargetRom);
+                    lastFatigueRepCount = repCount;
+                }
+            }
+        } else if (lastLandmarks) {
+            const angles = computeAngles(lastLandmarks);
+            primaryAngle = computePrimaryAngle(angles, currentExerciseType);
+            updateRepCount(primaryAngle, currentTargetRom);
+            updateStability(lastLandmarks);
+            updateSmoothness(primaryAngle);
+            updateBalance(lastLandmarks);
+            if (repCount > lastFatigueRepCount) {
+                recordRepQuality(primaryAngle, currentTargetRom);
+                lastFatigueRepCount = repCount;
+            }
+        }
+
+        if (primaryAngle != null) {
+            accuracy = Math.min(100, Math.max(0, (Math.min(currentTargetRom, primaryAngle) / currentTargetRom) * 100));
+        }
+
+        document.getElementById('stReps').textContent = `${repCount}/${SELF_TARGET_REPS}`;
+        document.getElementById('stAccuracy').textContent = `${Math.round(accuracy)}%`;
+
+        // Timeline sample every tick (300ms) — same shape session.html uses
+        // for its result chart / saveSession() averages, just recorded here
+        // on the patient's device instead of the doctor's.
+        selfTimeline.push({
+            t: selfElapsedSec,
+            acc: accuracy,
+            rom: primaryAngle != null ? Math.min(currentTargetRom, primaryAngle) : 0,
+            stab: stabilityScore,
+            smooth: smoothnessScore,
+            bal: balanceScore,
+            fat: fatigueScore,
+        });
+    }, 300);
+}
+
+let _lastSelfPayload = null; // kept so a failed save can be retried without losing the recording
+
+// Public entry point (bound to the "Finish Session" button). Only opens the
+// stop-reason sheet on the FIRST tap, while the session is still running —
+// once selfActive is false we're on a "Retry Save" tap after a failed save,
+// so we skip the sheet and just resubmit the same cached payload/reason.
+window.finishSelfTraining = async function finishSelfTraining() {
+    if (selfActive) {
+        openReasonSheet('finish');
+        return;
+    }
+    await doFinishSelfTraining(_lastSelfPayload ? _lastSelfPayload.end_reason : 'completed');
+};
+
+async function doFinishSelfTraining(reason) {
+    if (selfActive) {
+        selfActive = false;
+        clearInterval(selfElapsedTimer);
+        clearInterval(selfMetricsIntervalId);
+    }
+
+    const btn = document.querySelector('#stControlBar .st-finish-btn');
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving...'; }
+
+    const avg = (key, fallback) =>
+        selfTimeline.length ? selfTimeline.reduce((s, r) => s + r[key], 0) / selfTimeline.length : fallback;
+
+    const avgAcc    = avg('acc', 0);
+    const avgRom    = avg('rom', 0);
+    const avgStab   = avg('stab', stabilityScore);
+    const avgSmooth = avg('smooth', smoothnessScore);
+    const avgBal    = avg('bal', balanceScore);
+    const avgFat    = avg('fat', fatigueScore);
+
+    const payload = _lastSelfPayload || {
+        exercise_type:       currentExerciseType || 'General Exercise',
+        start_time:          new Date(selfStartTime).toISOString(),
+        end_time:            new Date().toISOString(),
+        duration_seconds:    selfElapsedSec,
+        total_reps:          SELF_TARGET_REPS,
+        completed_reps:      repCount,
+        accuracy_percentage: +avgAcc.toFixed(1),
+        average_rom:         +avgRom.toFixed(1),
+        stability_score:     +avgStab.toFixed(1),
+        balance_score:       +avgBal.toFixed(1),
+        movement_smoothness: +avgSmooth.toFixed(1),
+        fatigue_estimation:  +avgFat.toFixed(1),
+        recovery_score:      +((avgAcc + avgStab + avgRom + avgBal) / 4).toFixed(1),
+        incorrect_movements: Math.max(0, SELF_TARGET_REPS - repCount),
+        joint_angles:        [],
+        exercise_results:    [],
+        session_data:        { timeline: selfTimeline },
+        // Item 1: which of the 7 VALID_END_REASONS (models.py) caused the
+        // stop — picked by the patient on the stop-reason sheet just before
+        // this call. Backend (telehealth.py save_self_training_session)
+        // already validates/persists this; only the UI side was missing.
+        end_reason:           reason || 'completed',
+    };
+    _lastSelfPayload = payload;
+
+    try {
+        const res = await fetch(
+            `/api/telehealth/self-training/save/${ROOM_ID}?token=${encodeURIComponent(TOKEN)}`,
+            { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) },
+        );
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+        const durStr = `${String(Math.floor(selfElapsedSec/60)).padStart(2,'0')}:${String(selfElapsedSec%60).padStart(2,'0')}`;
+        document.getElementById('stSummary').style.display = 'block';
+        document.getElementById('stSummary').innerHTML = `
+            <div class="row"><span>Duration</span><b>${durStr}</b></div>
+            <div class="row"><span>Reps completed</span><b>${repCount}</b></div>
+            <div class="row"><span>Avg accuracy</span><b>${avgAcc.toFixed(0)}%</b></div>
+            <div class="row"><span>Avg ROM</span><b>${avgRom.toFixed(0)}°</b></div>`;
+        const endTitle = payload.end_reason === 'pain'
+            ? 'Session Stopped — Take Care'
+            : 'Great work!';
+        const endSub = payload.end_reason === 'pain'
+            ? 'Your session was saved and flagged as stopped due to pain. Your therapist will follow up.'
+            : 'Your session was saved to your record. Your therapist can review it anytime.';
+        endSelfTraining(endTitle, endSub);
+    } catch (e) {
+        console.error('finishSelfTraining save failed:', e);
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-redo"></i> Retry Save'; }
+        alert('Could not save your session — check your connection and tap "Retry Save".');
+    }
+};
+
+function endSelfTraining(title, sub) {
+    document.getElementById('endedTitle').textContent = title;
+    document.getElementById('endedSub').textContent = sub;
+    document.getElementById('endedOverlay').classList.add('active');
+    if (rafId) cancelAnimationFrame(rafId);
+    if (localStream) localStream.getTracks().forEach(t => t.stop());
+}
+
+// ─── Adaptive WebRTC video encoding ─────────────────────────────────────────
+// Tunes the outgoing video sender's framerate/bitrate to match the current
+// device tier, and prefers keeping framerate smooth over keeping resolution
+// sharp when the network or CPU is constrained ('maintain-framerate') — this
+// is the key setting for a smooth, low-lag feed to the doctor over a shaky
+// connection (e.g. a Cloudflare quick tunnel).
+//
+// Every property is feature-detected: `RTCRtpSender.getParameters/
+// setParameters` and `degradationPreference` are broadly supported in
+// modern Chromium/Safari/Firefox, but some older Android WebViews or
+// embedded browsers may partially implement this API. If anything here is
+// missing, we skip tuning silently — the call still works with default
+// WebRTC behavior, just without the extra smoothing.
+function applyVideoEncodingParams() {
+    if (!peerConn || typeof peerConn.getSenders !== 'function') return;
+    const sender = peerConn.getSenders().find(s => s.track && s.track.kind === 'video');
+    if (!sender || typeof sender.getParameters !== 'function' || typeof sender.setParameters !== 'function') {
+        console.warn('setParameters not supported on this browser — skipping bitrate/fps tuning');
+        return;
+    }
+
+    const profile = TIER_PROFILES[deviceTier];
+    try {
+        const params = sender.getParameters();
+        if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
+
+        params.encodings[0].maxFramerate = profile.videoFps;
+        params.encodings[0].maxBitrate   = profile.maxBitrate;
+        params.degradationPreference     = 'maintain-framerate';
+
+        sender.setParameters(params).catch(e =>
+            console.warn('setParameters rejected (non-fatal, video still works):', e));
+    } catch (e) {
+        console.warn('applyVideoEncodingParams failed (non-fatal):', e);
+    }
+}
+
+async function initPeerConnection() {
+    let iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
+    try {
+        const res = await fetch('/api/telehealth/turn-credentials');
+        if (res.ok) iceServers = (await res.json()).iceServers;
+    } catch (e) { console.warn('TURN fetch failed, using STUN only:', e); }
+
+    peerConn = new RTCPeerConnection({ iceServers });
+    localStream.getTracks().forEach(track => peerConn.addTrack(track, localStream));
+
+    // Apply device-tier-based encoding limits right after tracks are added,
+    // and again automatically whenever the tier is re-classified (see
+    // applyTier() above).
+    applyVideoEncodingParams();
+
+    peerConn.ontrack = (event) => {
+        const pip = document.getElementById('doctorPip');
+        pip.classList.remove('waiting');
+        pip.innerHTML = `<video autoplay playsinline></video><span class="pip-label">Doctor</span>`;
+        pip.querySelector('video').srcObject = event.streams[0];
+    };
+
+    peerConn.onicecandidate = (event) => {
+        if (event.candidate) sendSignal({ type: 'ice_candidate', candidate: event.candidate });
+    };
+
+    peerConn.onconnectionstatechange = () => {
+        if (peerConn.connectionState === 'connected') setConn(true, 'Live');
+        if (['disconnected','failed'].includes(peerConn.connectionState)) setConn(false, 'Reconnecting...');
+    };
+
+    // Fallback for browsers with weak/missing `connectionState` support
+    // (notably older iOS Safari) — `iceConnectionState` is far more
+    // consistently implemented, so use it too to make sure the "Live"
+    // dot actually lights up on patient mobile devices.
+    peerConn.oniceconnectionstatechange = () => {
+        if (['connected', 'completed'].includes(peerConn.iceConnectionState)) setConn(true, 'Live');
+        if (['disconnected', 'failed'].includes(peerConn.iceConnectionState)) setConn(false, 'Reconnecting...');
+    };
+}
+
+async function createAndSendOffer() {
+    const offer = await peerConn.createOffer();
+    await peerConn.setLocalDescription(offer);
+    sendSignal({ type: 'offer', sdp: offer });
+}
+
+function connectSignaling() {
+    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    signalWs = new WebSocket(`${proto}://${window.location.host}/ws/signal/${ROOM_ID}?role=patient&token=${encodeURIComponent(TOKEN)}`);
+
+    signalWs.onopen = () => { setConn(false, 'Connected — waiting for doctor'); startMetricsBroadcast(); };
+
+    signalWs.onmessage = async (event) => {
+        const msg = JSON.parse(event.data);
+        switch (msg.type) {
+            case 'peer_already_present':
+            case 'peer_joined':
+                if (msg.role === 'doctor' && !doctorAlreadyPresent) {
+                    doctorAlreadyPresent = true;
+                    await createAndSendOffer();
+                }
+                break;
+            case 'answer':
+                await peerConn.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+                break;
+            case 'ice_candidate':
+                try { await peerConn.addIceCandidate(msg.candidate); } catch (e) { console.warn(e); }
+                break;
+            case 'peer_left':
+                if (msg.role === 'doctor') {
+                    doctorAlreadyPresent = false;
+                    const pip = document.getElementById('doctorPip');
+                    pip.classList.add('waiting');
+                    pip.innerHTML = '<span>Waiting for<br>doctor to join...</span>';
+                    setConn(false, 'Doctor disconnected');
+                }
+                break;
+            case 'session_closed':
+                endSession('Session Ended', 'Your doctor has ended this session. Thank you!');
+                break;
+            case 'session_config':
+                // Doctor picked/changed an exercise — use it for our own
+                // rep-counting thresholds, and start a fresh rep count.
+                currentExerciseType = msg.exercise_type || currentExerciseType;
+                currentTargetRom    = msg.target_rom    || currentTargetRom;
+                resetExerciseMetrics();
+                break;
+            case 'kicked':
+                // Item 3: this room was just opened in another tab/device
+                // (server already closing this socket with code 4010 right
+                // after this message). Flagged here so onclose below can
+                // tell this apart from a normal network drop.
+                _kickedByOtherDevice = true;
+                break;
+        }
+    };
+
+    signalWs.onclose = (event) => {
+        // Item 3: code 4010 = this exact same room link was opened in
+        // another tab/device, and THIS connection is the one that got
+        // replaced. Previously this looked identical to a plain network
+        // drop ("Disconnected") — patient had no idea what actually
+        // happened. Only show this if a call is actually in progress
+        // (not after a normal endSession(), which also closes signalWs).
+        if ((event.code === 4010 || _kickedByOtherDevice) && !document.getElementById('endedOverlay').classList.contains('active')) {
+            endSession('Opened On Another Device', 'This session link was opened in another tab or device, so it was disconnected here.');
+            return;
+        }
+        setConn(false, 'Disconnected');
+    };
+}
+
+function sendSignal(data) {
+    if (signalWs && signalWs.readyState === WebSocket.OPEN) signalWs.send(JSON.stringify(data));
+}
+
+// ─── Stop-reason sheet ──────────────────────────────────────────────────
+// Shared between Remote "Leave" and Self Training "Finish" — captures WHY
+// the patient is stopping (completed / pain / stopped_by_patient /
+// technical_error, matching models.VALID_END_REASONS) instead of a bare
+// generic leave/finish with no reason at all.
+let _reasonSheetContext = null; // 'leave' | 'finish'
+
+function openReasonSheet(context) {
+    _reasonSheetContext = context;
+    const isFinish = context === 'finish';
+    document.getElementById('reasonSheetTitle').textContent = isFinish ? 'Finish session?' : 'Leave session?';
+    document.getElementById('reasonSheetSub').textContent   = isFinish
+        ? 'Let us know why you\'re stopping — this helps your therapist follow up correctly.'
+        : 'Let us know why you\'re leaving — your therapist will see this right away.';
+    document.getElementById('reasonBackdrop').classList.add('active');
+}
+
+window.closeReasonSheet = function () {
+    document.getElementById('reasonBackdrop').classList.remove('active');
+    _reasonSheetContext = null;
+};
+
+window.pickStopReason = function (reason) {
+    const context = _reasonSheetContext;
+    document.getElementById('reasonBackdrop').classList.remove('active');
+    _reasonSheetContext = null;
+    if (context === 'finish') {
+        doFinishSelfTraining(reason);
+    } else if (context === 'leave') {
+        leaveCallWithReason(reason);
+    }
+};
+
+window.toggleMic = function () {
+    micOn = !micOn;
+    localStream.getAudioTracks().forEach(t => t.enabled = micOn);
+    const btn = document.getElementById('micBtn');
+    btn.classList.toggle('off', !micOn);
+    btn.innerHTML = `<i class="fas fa-microphone${micOn ? '' : '-slash'}"></i>`;
+};
+
+window.toggleCam = function () {
+    camOn = !camOn;
+    localStream.getVideoTracks().forEach(t => t.enabled = camOn);
+    const btn = document.getElementById('camBtn');
+    btn.classList.toggle('off', !camOn);
+    btn.innerHTML = `<i class="fas fa-video${camOn ? '' : '-slash'}"></i>`;
+};
+
+window.leaveCall = function () {
+    openReasonSheet('leave');
+};
+
+// Item 1: same stop-reason sheet as Self Training. We tell the doctor
+// live over the signal socket so they know WHY the patient left (pain vs
+// just done vs tech issue), instead of a silent generic "left" — item 5's
+// save endpoint then persists that same reason as end_reason once this
+// socket actually disconnects (see telehealth.py _finalize_remote_session).
+//
+// Item "rejoin mismatch": this used to say "you can rejoin using the same
+// link" — that was never true. The server closes the room the instant
+// either side disconnects (telehealth.py ws_signal), so the same link
+// always 410s afterward. Copy below now matches actual behavior: leaving
+// ends the session for good, and a new link has to be scheduled.
+function leaveCallWithReason(reason) {
+    const titles = {
+        completed:  ['Session Finished', 'Nice work — your results have been saved. Ask your therapist to schedule your next session.'],
+        pain:       ["You've Left — Take Care", 'Your therapist has been notified you stopped due to pain.'],
+        stopped_by_patient: ['You Left the Session', 'This link is now closed. Ask your therapist to schedule a new session if you need to continue.'],
+        technical_error: ['You Left the Session', 'Reported as a technical issue. This link is now closed — ask your therapist to schedule a new session.'],
+    };
+    const [title, sub] = titles[reason] || titles.stopped_by_patient;
+    sendSignal({ type: 'patient_leaving', reason });
+    endSession(title, sub);
+}
+
+function endSession(title, sub) {
+    document.getElementById('endedTitle').textContent = title;
+    document.getElementById('endedSub').textContent = sub;
+    document.getElementById('endedOverlay').classList.add('active');
+
+    // rafId is only used by the legacy rAF fallback path; the
+    // requestVideoFrameCallback path stops naturally once localStream's
+    // tracks are stopped below (no more decoded frames -> no more callbacks).
+    if (rafId) cancelAnimationFrame(rafId);
+    if (metricsIntervalId) clearInterval(metricsIntervalId);
+    if (localStream) localStream.getTracks().forEach(t => t.stop());
+    if (peerConn) peerConn.close();
+    if (signalWs) signalWs.close();
+}
+
+window.addEventListener('beforeunload', () => {
+    if (localStream) localStream.getTracks().forEach(t => t.stop());
+    if (peerConn) peerConn.close();
+});
+</script>
+</body>
+</html>

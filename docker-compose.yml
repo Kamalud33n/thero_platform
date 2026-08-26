@@ -1,0 +1,43 @@
+services:
+  app:
+    build: .
+    image: thero:latest
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      # Compose network hostname for MySQL — overrides whatever host is in
+      # the .env file's DATABASE_URL so it always points at the "db" service.
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER:-thero}:${MYSQL_PASSWORD:-thero}@db:3306/${MYSQL_DATABASE:-rehab_db_v2}?charset=utf8mb4
+      LOCAL_CAMERA_ENABLED: "false"
+    volumes:
+      - thero_data:/app/data
+      - thero_reports:/app/reports
+      - thero_uploads:/app/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change-me}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-rehab_db_v2}
+      MYSQL_USER: ${MYSQL_USER:-thero}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-thero}
+    volumes:
+      - thero_mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-change-me}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  thero_mysql_data:
+  thero_data:
+  thero_reports:
+  thero_uploads:

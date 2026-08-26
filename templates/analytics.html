@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Analytics - RehabAI</title>
+    <script src="/static/auth-bridge.js"></script>
+    <link rel="stylesheet" href="/static/style.css?v=2">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="/static/chart.umd.min.js"></script>
+    <style>
+        .compare-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 16px;
+            margin-bottom: 20px;
+        }
+        .compare-card {
+            padding: 18px;
+            border-radius: 14px;
+        }
+        .compare-card .metric-label {
+            font-size: 12px;
+            color: var(--text-light);
+            text-transform: uppercase;
+            letter-spacing: .04em;
+            margin-bottom: 8px;
+        }
+        .compare-card .metric-row {
+            display: flex;
+            align-items: baseline;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .compare-card .metric-today {
+            font-size: 26px;
+            font-weight: 700;
+        }
+        .compare-card .metric-yesterday {
+            font-size: 13px;
+            color: var(--text-light);
+        }
+        .delta-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 12px;
+            font-weight: 600;
+            padding: 3px 9px;
+            border-radius: 999px;
+            margin-top: 8px;
+        }
+        .delta-up   { background: rgba(29,138,109,0.12);  color: #2e7d32; }
+        .delta-down { background: rgba(244,67,54,0.12);  color: #c62828; }
+        .delta-flat { background: rgba(158,158,158,0.12); color: #616161; }
+        .canvas-wrapper-lg {
+            position: relative;
+            width: 100%;
+            height: 260px;
+        }
+        .canvas-wrapper-lg canvas {
+            position: absolute !important;
+            top: 0; left: 0;
+            width: 100% !important;
+            height: 100% !important;
+        }
+        @media (max-width: 768px) {
+            .canvas-wrapper-lg { height: 200px; }
+        }
+        .no-data-msg {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: var(--text-light);
+            font-size: 14px;
+            gap: 8px;
+            padding: 24px;
+        }
+        .no-data-msg i { font-size: 32px; }
+        .session-mini-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        .session-mini-table th, .session-mini-table td {
+            padding: 8px 10px; text-align: left; border-bottom: 1px solid rgba(0,0,0,0.06);
+        }
+        .session-mini-table th { color: var(--text-light); font-weight: 600; font-size: 11px; text-transform: uppercase; }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar glass-effect">
+            <div class="sidebar-header">
+                <div class="logo-container">
+                    <img class="logo-icon" src="/assets/logo.png?v=2" alt="MedNova logo" width="44" height="44">
+                    <div class="logo-text">
+                        <span class="logo-title">MedNova</span>
+                        <span class="logo-subtitle">Therapy System</span>
+                    </div>
+                </div>
+            </div>
+            <nav class="sidebar-nav">
+                <a href="/analytics" class="nav-item active"><i class="fas fa-chart-line"></i><span>Analysis</span></a>
+                <a href="/patients"  class="nav-item"><i class="fas fa-users"></i><span>Patients</span></a>
+                <a href="/session"   class="nav-item"><i class="fas fa-video"></i><span>Start Session</span></a>
+                <a href="/reports"   class="nav-item"><i class="fas fa-file-alt"></i><span>Reports</span></a>
+            </nav>
+            <div class="sidebar-footer">
+                <div class="status-indicator">
+                    <span class="status-dot online"></span>
+                    <span class="status-text">System Online</span>
+                </div>
+                <div class="version-info">v2.0.0</div>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <header class="top-bar glass-effect">
+                <div class="top-bar-left">
+                    <button class="menu-toggle" id="menuToggle"><i class="fas fa-bars"></i></button>
+                    <div class="breadcrumb">
+                        <span>Home</span>
+                        <i class="fas fa-chevron-right"></i>
+                        <span class="active">Analysis</span>
+                    </div>
+                </div>
+                <div class="top-bar-right">
+                    <div class="status-badge">
+                        <span class="badge-dot"></span>
+                        <span>AI Ready</span>
+                    </div>
+                    <button class="logout-btn" onclick="handleLogout()">
+                        <i class="fas fa-sign-out-alt"></i>
+                    </button>
+                </div>
+            </header>
+
+            <div class="content-area">
+
+                <div class="reports-header">
+                    <div class="header-left">
+                        <h2>Today vs Yesterday</h2>
+                        <p class="header-subtitle">Compare today's performance against the previous day</p>
+                    </div>
+                    <div class="header-right">
+                        <div class="report-filters">
+                            <select id="analyticsPatientSelect" class="glass-select" onchange="loadAnalytics()">
+                                <option value="">All Patients</option>
+                            </select>
+                            <button class="btn-secondary" onclick="loadAnalytics()">
+                                <i class="fas fa-sync"></i> Refresh
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Comparison cards -->
+                <div class="compare-grid" id="compareGrid">
+                    <div class="no-data-msg" style="grid-column:1/-1"><i class="fas fa-spinner fa-spin"></i><span>Loading...</span></div>
+                </div>
+
+                <!-- 7-day trend -->
+                <div class="chart-container glass-effect animate-slide-up">
+                    <div class="chart-header">
+                        <h3>Last 7 Days Trend</h3>
+                    </div>
+                    <div class="canvas-wrapper-lg">
+                        <canvas id="trendChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- Today's sessions -->
+                <div class="report-history glass-effect animate-slide-up">
+                    <div class="section-header">
+                        <h3>Today's Sessions</h3>
+                    </div>
+                    <div class="table-container">
+                        <table class="session-mini-table" id="todaySessionsTable">
+                            <thead>
+                                <tr><th>Time</th><th>Exercise</th><th>Accuracy</th><th>ROM</th><th>Stability</th><th>Reps</th></tr>
+                            </thead>
+                            <tbody id="todaySessionsBody">
+                                <tr><td colspan="6" class="text-center">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Yesterday's sessions -->
+                <div class="report-history glass-effect animate-slide-up">
+                    <div class="section-header">
+                        <h3>Yesterday's Sessions</h3>
+                    </div>
+                    <div class="table-container">
+                        <table class="session-mini-table" id="yesterdaySessionsTable">
+                            <thead>
+                                <tr><th>Time</th><th>Exercise</th><th>Accuracy</th><th>ROM</th><th>Stability</th><th>Reps</th></tr>
+                            </thead>
+                            <tbody id="yesterdaySessionsBody">
+                                <tr><td colspan="6" class="text-center">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+            </div>
+        </main>
+    </div>
+
+    <script src="/static/app.js"></script>
+    <script>
+    let _trendChart = null;
+
+    document.addEventListener('DOMContentLoaded', async () => {
+        document.getElementById('menuToggle')?.addEventListener('click', () =>
+            document.querySelector('.sidebar').classList.toggle('active'));
+
+        await loadPatientsDropdown();
+        loadAnalytics();
+    });
+
+    async function loadPatientsDropdown() {
+        try {
+            const patients = await (await fetch('/api/patients')).json();
+            const sel = document.getElementById('analyticsPatientSelect');
+            patients.forEach(p => {
+                const o = document.createElement('option');
+                o.value = p.id;
+                o.textContent = p.name;
+                sel.appendChild(o);
+            });
+        } catch (e) { console.error('loadPatientsDropdown:', e); }
+    }
+
+    async function loadAnalytics() {
+        const pid = document.getElementById('analyticsPatientSelect').value;
+        const url = pid ? `/api/analytics?patient_id=${pid}` : '/api/analytics';
+
+        document.getElementById('compareGrid').innerHTML =
+            '<div class="no-data-msg" style="grid-column:1/-1"><i class="fas fa-spinner fa-spin"></i><span>Loading...</span></div>';
+
+        try {
+            const res = await fetch(url);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+
+            renderCompareCards(data);
+            renderTrendChart(data.trend || []);
+            renderSessionsTable('todaySessionsBody', data.today_sessions || []);
+            renderSessionsTable('yesterdaySessionsBody', data.yesterday_sessions || []);
+        } catch (e) {
+            console.error('loadAnalytics:', e);
+            document.getElementById('compareGrid').innerHTML =
+                '<div class="no-data-msg" style="grid-column:1/-1;color:var(--medical-green)"><i class="fas fa-exclamation-circle" style="color:#D9503E"></i><span style="color:var(--text-secondary)">Failed to load analytics</span></div>';
+        }
+    }
+
+    const METRICS = [
+        { key: 'sessions',       label: 'Sessions',       fmt: v => v, suffix: '' },
+        { key: 'total_reps',     label: 'Total Reps',     fmt: v => v, suffix: '' },
+        { key: 'avg_accuracy',   label: 'Avg Accuracy',   fmt: v => v, suffix: '%' },
+        { key: 'avg_rom',        label: 'Avg ROM',        fmt: v => v, suffix: '°' },
+        { key: 'avg_stability',  label: 'Avg Stability',  fmt: v => v, suffix: '%' },
+        { key: 'recovery_score', label: 'Recovery Score', fmt: v => v, suffix: '%' },
+    ];
+
+    function renderCompareCards(data) {
+        const today = data.today || {};
+        const yest  = data.yesterday || {};
+        const deltas = data.deltas || {};
+
+        document.getElementById('compareGrid').innerHTML = METRICS.map(m => {
+            const tVal = today[m.key] ?? 0;
+            const yVal = yest[m.key] ?? 0;
+            const d    = deltas[m.key];
+
+            let pillClass = 'delta-flat', pillIcon = 'fa-minus', pillText = 'No change';
+            if (d != null) {
+                if (d > 0)      { pillClass = 'delta-up';   pillIcon = 'fa-arrow-up';   pillText = `+${d}% vs yesterday`; }
+                else if (d < 0) { pillClass = 'delta-down'; pillIcon = 'fa-arrow-down'; pillText = `${d}% vs yesterday`; }
+                else            { pillText = 'No change vs yesterday'; }
+            } else {
+                pillText = 'No data yesterday';
+            }
+
+            return `
+                <div class="compare-card glass-effect animate-slide-up">
+                    <div class="metric-label">${m.label}</div>
+                    <div class="metric-row">
+                        <span class="metric-today">${m.fmt(tVal)}${m.suffix}</span>
+                        <span class="metric-yesterday">yesterday: ${m.fmt(yVal)}${m.suffix}</span>
+                    </div>
+                    <div class="delta-pill ${pillClass}"><i class="fas ${pillIcon}"></i>${pillText}</div>
+                </div>`;
+        }).join('');
+    }
+
+    function renderTrendChart(trend) {
+        const labels  = trend.map(t => t.date.slice(5));
+        const accData = trend.map(t => t.avg_accuracy);
+        const romData = trend.map(t => t.avg_rom);
+        const stabData= trend.map(t => t.avg_stability);
+
+        if (_trendChart) {
+            _trendChart.data.labels = labels;
+            _trendChart.data.datasets[0].data = accData;
+            _trendChart.data.datasets[1].data = romData;
+            _trendChart.data.datasets[2].data = stabData;
+            _trendChart.update();
+            return;
+        }
+
+        const ctx = document.getElementById('trendChart').getContext('2d');
+        _trendChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels,
+                datasets: [
+                    { label:'Accuracy %',  data:accData,  borderColor:'#1D8A6D', backgroundColor:'rgba(29,138,109,0.1)',
+                      tension:0.4, fill:true, borderWidth:2, pointRadius:4 },
+                    { label:'ROM °',       data:romData,  borderColor:'#3E6FD9', backgroundColor:'rgba(59,91,165,0.1)',
+                      tension:0.4, fill:true, borderWidth:2, pointRadius:4 },
+                    { label:'Stability %', data:stabData, borderColor:'#D68F35', backgroundColor:'rgba(168,120,46,0.1)',
+                      tension:0.4, fill:true, borderWidth:2, pointRadius:4 },
+                ]
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                plugins: { legend: { display:true, position:'top',
+                    labels:{ usePointStyle:true, pointStyle:'circle', padding:18, font:{size:12} } } },
+                scales: {
+                    y: { beginAtZero:true, max:100, grid:{color:'rgba(0,0,0,0.04)'} },
+                    x: { grid:{display:false} }
+                },
+                interaction: { intersect:false, mode:'index' }
+            }
+        });
+    }
+
+    function renderSessionsTable(tbodyId, sessions) {
+        const tbody = document.getElementById(tbodyId);
+        if (!sessions.length) {
+            tbody.innerHTML = '<tr><td colspan="6" class="text-center">No sessions</td></tr>';
+            return;
+        }
+        tbody.innerHTML = sessions.map(s => `
+            <tr>
+                <td>${(s.start_time || '').split('T')[1]?.slice(0,5) || s.start_time || '—'}</td>
+                <td>${s.exercise_type}</td>
+                <td>${s.accuracy_percentage != null ? s.accuracy_percentage.toFixed(1) : '—'}%</td>
+                <td>${s.average_rom != null ? s.average_rom.toFixed(1) : '—'}°</td>
+                <td>${s.stability_score != null ? s.stability_score.toFixed(1) : '—'}%</td>
+                <td>${s.completed_reps}</td>
+            </tr>`).join('');
+    }
+
+    function handleLogout() {
+        if (confirm('Are you sure you want to logout?')) window.location.href = '/';
+    }
+    </script>
+</body>
+</html>

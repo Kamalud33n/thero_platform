@@ -1,0 +1,36 @@
+# Environment / secrets
+.env
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+
+# Runtime-generated data (kept as empty dirs via .gitkeep)
+data/*
+!data/.gitkeep
+!data/reports/
+data/reports/*
+!data/reports/.gitkeep
+
+reports/*
+!reports/.gitkeep
+
+uploads/*
+!uploads/.gitkeep
+
+# SQLite (if DATABASE_URL ever falls back to sqlite locally)
+*.db
+*.sqlite3
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

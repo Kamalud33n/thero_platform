@@ -1,0 +1,15 @@
+.git
+.gitignore
+.env
+*.pem
+__pycache__/
+*.pyc
+.pytest_cache/
+data/*
+!data/.gitkeep
+reports/*
+!reports/.gitkeep
+uploads/*
+!uploads/.gitkeep
+tests/
+README.md

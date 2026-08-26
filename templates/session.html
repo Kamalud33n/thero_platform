@@ -1,0 +1,2402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Session - RehabAI</title>
+    <script src="/static/auth-bridge.js"></script>
+    <link rel="stylesheet" href="/static/style.css?v=2">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="/static/chart.umd.min.js"></script>
+    <style>
+        /* ── Camera container ── */
+        .camera-container {
+            position: relative;
+            background: #0d1117;
+            border-radius: 12px;
+            overflow: hidden;
+            aspect-ratio: 4/3;
+            margin-bottom: 12px;
+        }
+
+        /* ── Timer ring ── */
+        .timer-ring-wrap {
+            position: absolute;
+            bottom: 14px;
+            right: 14px;
+            z-index: 10;
+            display: none;
+        }
+        .timer-ring-wrap.active { display: block; }
+        .timer-svg { transform: rotate(-90deg); }
+        .timer-bg   { fill: none; stroke: rgba(255,255,255,0.15); stroke-width: 5; }
+        .timer-fill {
+            fill: none;
+            stroke: #1D8A6D;
+            stroke-width: 5;
+            stroke-linecap: round;
+            transition: stroke-dashoffset 1s linear, stroke 0.3s;
+        }
+        .timer-text {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            font-weight: 800;
+            color: #fff;
+            text-shadow: 0 2px 8px rgba(0,0,0,0.7);
+        }
+
+        /* ── Pose badges ── */
+        .pose-badges {
+            position: absolute;
+            top: 12px; left: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            z-index: 10;
+            pointer-events: none;
+        }
+        .pose-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 700;
+            backdrop-filter: blur(6px);
+            border: 1px solid rgba(255,255,255,0.15);
+            color: #fff;
+            min-width: 130px;
+        }
+        .pose-badge.green  { background: rgba(29,138,109,0.82); }
+        .pose-badge.blue   { background: rgba(59,91,165,0.82); }
+        .pose-badge.orange { background: rgba(168,120,46,0.82); }
+        .pose-badge.red    { background: rgba(244,67,54,0.82); }
+        .pose-badge.purple { background: rgba(122,92,142,0.82); }
+        .pose-badge.joint-inactive {
+            background: rgba(120,120,120,0.45) !important;
+            filter: grayscale(1);
+            opacity: 0.55;
+        }
+        .angle-item.joint-inactive {
+            opacity: 0.4;
+            filter: grayscale(1);
+        }
+        .angle-item.joint-active {
+            box-shadow: 0 0 0 1px rgba(29,138,109,0.4) inset;
+            border-radius: 6px;
+        }
+
+        /* ── Recording dot ── */
+        .recording-indicator {
+            position: absolute;
+            top: 12px; right: 12px;
+            display: none;
+            align-items: center;
+            gap: 6px;
+            background: rgba(244,67,54,0.85);
+            color: #fff;
+            font-size: 12px;
+            font-weight: 700;
+            padding: 4px 10px;
+            border-radius: 20px;
+            z-index: 10;
+        }
+        .recording-indicator.active { display: flex; }
+        .rec-dot {
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            background: #fff;
+            animation: blink 1s infinite;
+        }
+        @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.2} }
+
+        .no-pose-warning {
+            position: absolute;
+            bottom: 12px; left: 50%;
+            transform: translateX(-50%);
+            background: rgba(244,67,54,0.85);
+            color: #fff;
+            font-size: 12px;
+            font-weight: 600;
+            padding: 4px 14px;
+            border-radius: 20px;
+            display: none;
+            z-index: 10;
+            white-space: nowrap;
+        }
+
+        /* ── Duration selector ── */
+        .duration-selector {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-bottom: 4px;
+        }
+        .dur-btn {
+            padding: 6px 16px;
+            border-radius: 20px;
+            border: 2px solid rgba(29,138,109,0.3);
+            background: transparent;
+            color: var(--text-secondary);
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: var(--transition-smooth);
+        }
+        .dur-btn:hover  { border-color: var(--medical-green); color: var(--medical-green); }
+        .dur-btn.active { background: var(--medical-green); border-color: var(--medical-green); color: #fff; }
+
+        .custom-dur-wrap {
+            display: none;
+            align-items: center;
+            gap: 8px;
+            margin-top: 8px;
+        }
+        .custom-dur-wrap.show { display: flex; }
+        .custom-dur-wrap input {
+            width: 70px;
+            padding: 6px 10px;
+            border-radius: 8px;
+            border: 1px solid rgba(0,0,0,0.1);
+            background: rgba(255,255,255,0.6);
+            font-size: 14px;
+        }
+
+        /* ── Session result modal ── */
+        .result-modal {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.5);
+            backdrop-filter: blur(6px);
+            z-index: 2000;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .result-modal.active { display: flex; }
+        .result-card {
+            background: rgba(255,255,255,0.96);
+            border-radius: 24px;
+            padding: 32px;
+            max-width: 680px;
+            width: 100%;
+            max-height: 90vh;
+            overflow-y: auto;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.2);
+        }
+        .result-header {
+            text-align: center;
+            margin-bottom: 24px;
+        }
+        .result-icon {
+            width: 64px; height: 64px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #1D8A6D, #145940);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 28px;
+            color: #fff;
+            margin: 0 auto 12px;
+            box-shadow: 0 8px 24px rgba(29,138,109,0.3);
+        }
+        .result-header h2 {
+            font-size: 22px;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+        .result-header p {
+            font-size: 14px;
+            color: var(--text-secondary);
+            margin-top: 4px;
+        }
+        .result-stats {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 12px;
+            margin-bottom: 24px;
+        }
+        .result-stat {
+            text-align: center;
+            padding: 14px 8px;
+            border-radius: 14px;
+            background: var(--light-gray);
+        }
+        .result-stat .val {
+            font-size: 22px;
+            font-weight: 800;
+            color: var(--text-primary);
+        }
+        .result-stat .lbl {
+            font-size: 11px;
+            color: var(--text-secondary);
+            margin-top: 2px;
+        }
+        .result-chart-wrap {
+            position: relative;
+            height: 220px;
+            margin-bottom: 20px;
+        }
+        .result-actions {
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        /* ── Remote / Self Training session lists (below the main session UI) ── */
+        .sessions-lists-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-top: 20px;
+        }
+        @media (max-width: 900px) {
+            .sessions-lists-row { grid-template-columns: 1fr; }
+        }
+        .sessions-list-panel { padding: 20px; }
+        .sessions-list-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 14px;
+        }
+        .sessions-list-header h3 {
+            font-size: 15px;
+            font-weight: 700;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .sessions-list-header h3 i { color: var(--medical-green); }
+        .sessions-list-refresh {
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 13px;
+            padding: 4px 8px;
+            border-radius: 6px;
+            transition: var(--transition-smooth);
+        }
+        .sessions-list-refresh:hover { color: var(--medical-green); background: rgba(29,138,109,0.08); }
+        .session-list-empty {
+            font-size: 13px;
+            color: var(--text-secondary);
+            padding: 18px 4px;
+            text-align: center;
+        }
+        .session-list-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px 10px;
+            border-radius: 12px;
+            background: rgba(0,0,0,0.02);
+            margin-bottom: 8px;
+        }
+        .session-list-item:last-child { margin-bottom: 0; }
+        .session-list-item .info { flex: 1; min-width: 0; }
+        .session-list-item .name {
+            font-size: 13.5px;
+            font-weight: 700;
+            color: var(--text-primary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .session-list-item .meta {
+            font-size: 11.5px;
+            color: var(--text-secondary);
+            margin-top: 2px;
+        }
+        .status-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            font-size: 11px;
+            font-weight: 700;
+            padding: 4px 10px;
+            border-radius: 20px;
+            white-space: nowrap;
+        }
+        .status-pill.created   { background: rgba(62,111,217,0.12); color: #3E6FD9; }
+        .status-pill.live      { background: rgba(29,138,109,0.12); color: #1D8A6D; }
+        .status-pill.live .dot {
+            width: 6px; height: 6px; border-radius: 50%;
+            background: #1D8A6D; animation: remotePulse 1.4s infinite;
+        }
+        .status-pill.completed { background: rgba(139,95,199,0.12); color: #8B5FC7; }
+        .btn-sm {
+            padding: 6px 12px !important;
+            font-size: 12px !important;
+            white-space: nowrap;
+        }
+
+        /* ── Remote (telehealth) session modal ── */
+        .remote-modal {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.5);
+            backdrop-filter: blur(6px);
+            z-index: 2000;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .remote-modal.active { display: flex; }
+        .remote-card {
+            background: rgba(255,255,255,0.97);
+            border-radius: 24px;
+            padding: 28px;
+            max-width: 720px;
+            width: 100%;
+            max-height: 90vh;
+            overflow-y: auto;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.2);
+        }
+        .remote-card h2 { font-size: 19px; font-weight: 700; color: var(--text-primary); margin: 0 0 4px; display:flex; align-items:center; gap:8px; }
+        .remote-card h2 i { color: var(--medical-green); }
+        .remote-card .sub { font-size: 13px; color: var(--text-secondary); margin: 0 0 20px; }
+        .remote-close {
+            position: absolute; top: 18px; right: 18px;
+            background: none; border: none; font-size: 18px;
+            color: var(--text-secondary); cursor: pointer;
+        }
+        .remote-card { position: relative; }
+
+        .schedule-hint {
+            font-size: 12px; color: var(--text-secondary);
+            display: flex; align-items: center; gap: 6px;
+            margin: -4px 0 14px;
+        }
+        .schedule-hint i { color: var(--medical-green); }
+        .schedule-summary {
+            background: var(--light-blue); border-radius: 10px;
+            padding: 10px 12px; font-size: 12.5px; color: var(--text-primary);
+            display: none; gap: 4px; flex-direction: column; margin-bottom: 14px;
+        }
+        .schedule-summary.show { display: flex; }
+        .schedule-summary b { color: var(--text-primary); }
+
+        .remote-link-row {
+            display: flex; gap: 8px; margin: 14px 0;
+        }
+        .remote-link-row input {
+            flex: 1;
+            padding: 10px 12px;
+            border-radius: 10px;
+            border: 1px solid rgba(0,0,0,0.1);
+            background: var(--light-gray);
+            font-size: 13px;
+            color: var(--text-primary);
+        }
+        .remote-status-line {
+            display: flex; align-items: center; gap: 8px;
+            font-size: 13px; color: var(--text-secondary);
+            margin-top: 10px;
+        }
+        .remote-status-dot { width: 9px; height: 9px; border-radius: 50%; background: #D9503E; }
+        .remote-status-dot.live { background: #1D8A6D; animation: remotePulse 1.4s infinite; }
+        @keyframes remotePulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+
+        /* Live call layout */
+        .remote-call-grid {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 16px;
+            margin-top: 6px;
+        }
+        .remote-video-wrap {
+            position: relative;
+            border-radius: 16px;
+            overflow: hidden;
+            background: #0d1117;
+            aspect-ratio: 4/3;
+        }
+        .remote-video-wrap video { width: 100%; height: 100%; object-fit: cover; }
+        .remote-video-wrap .no-patient,
+        .camera-container .no-patient {
+            position: absolute; inset: 0;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            color: rgba(255,255,255,0.55); font-size: 13px; gap: 8px; text-align:center; padding: 16px;
+            z-index: 5;
+        }
+        .remote-doctor-pip {
+            position: absolute; bottom: 10px; right: 10px;
+            width: 76px; height: 100px;
+            border-radius: 10px; overflow: hidden;
+            border: 2px solid rgba(255,255,255,0.3);
+            background: #1a1a1a;
+            z-index: 12;
+        }
+        .remote-doctor-pip video { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+
+        .remote-angle-panel { display: flex; flex-direction: column; gap: 8px; }
+        .remote-angle-chip {
+            background: var(--light-gray);
+            border-radius: 12px;
+            padding: 10px 12px;
+            display: flex; align-items: center; justify-content: space-between;
+        }
+        .remote-angle-chip .lbl { font-size: 12px; color: var(--text-secondary); }
+        .remote-angle-chip .val { font-size: 16px; font-weight: 800; color: var(--text-primary); }
+
+        .remote-controls-row {
+            display: flex; gap: 10px; justify-content: center; margin-top: 18px; flex-wrap: wrap;
+        }
+
+        @media (max-width: 600px) {
+            .remote-call-grid { grid-template-columns: 1fr; }
+        }
+
+        @media (max-width: 600px) {
+            .result-stats { grid-template-columns: repeat(2,1fr); }
+        }
+    </style>
+</head>
+<body>
+<div class="app-container">
+
+    <!-- Sidebar -->
+    <aside class="sidebar glass-effect">
+        <div class="sidebar-header">
+            <div class="logo-container">
+                <img class="logo-icon" src="/assets/logo.png?v=2" alt="MedNova logo" width="44" height="44">
+                <div class="logo-text">
+                    <span class="logo-title">MedNova</span>
+                    <span class="logo-subtitle">Therapy System</span>
+                </div>
+            </div>
+        </div>
+        <nav class="sidebar-nav">
+            <a href="/analytics" class="nav-item"><i class="fas fa-chart-line"></i><span>Analysis</span></a>
+            <a href="/patients"  class="nav-item"><i class="fas fa-users"></i><span>Patients</span></a>
+            <a href="/session"   class="nav-item active"><i class="fas fa-video"></i><span>Start Session</span></a>
+            <a href="/reports"   class="nav-item"><i class="fas fa-file-alt"></i><span>Reports</span></a>
+        </nav>
+        <div class="sidebar-footer">
+            <div class="status-indicator">
+                <span class="status-dot online"></span>
+                <span class="status-text">System Online</span>
+            </div>
+            <div class="version-info">v2.2.0</div>
+        </div>
+    </aside>
+
+    <!-- Main -->
+    <main class="main-content">
+        <header class="top-bar glass-effect">
+            <div class="top-bar-left">
+                <button class="menu-toggle" id="menuToggle"><i class="fas fa-bars"></i></button>
+                <div class="breadcrumb">
+                    <span>Home</span><i class="fas fa-chevron-right"></i>
+                    <span class="active">Session</span>
+                </div>
+            </div>
+            <div class="top-bar-right">
+                <div class="patient-selector">
+                    <select id="sessionPatientSelect" class="glass-select">
+                        <option value="">Select Patient</option>
+                    </select>
+                </div>
+                <div class="status-badge" id="sessionStatus">
+                    <span class="badge-dot" id="statusDot"></span>
+                    <span id="statusText">Ready</span>
+                </div>
+                <div class="camera-status" id="cameraStatus">
+                    <i class="fas fa-camera"></i>
+                    <span id="cameraStatusText">Disconnected</span>
+                </div>
+                <button class="logout-btn" onclick="handleLogout()">
+                    <i class="fas fa-sign-out-alt"></i>
+                </button>
+            </div>
+        </header>
+
+        <div class="content-area">
+            <div class="session-container">
+
+                <!-- Camera -->
+                <div class="camera-section glass-effect">
+                    <div class="camera-header">
+                        <h3>Live Pose Analysis</h3>
+                        <div class="camera-controls">
+                            <button id="startSessionBtn" class="btn-primary" onclick="startSession()">
+                                <i class="fas fa-play"></i> Start Session
+                            </button>
+                            <button id="stopSessionBtn" class="btn-danger" onclick="stopSession()" style="display:none">
+                                <i class="fas fa-stop"></i> Stop Session
+                            </button>
+                            <button class="btn-secondary" onclick="openRemoteModal()">
+                                <i class="fas fa-wifi"></i> Remote Session
+                            </button>
+                            <button class="btn-secondary" onclick="openSelfTrainingModal()">
+                                <i class="fas fa-person-running"></i> Self Training
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="camera-container">
+
+
+                        <!-- Pose badges -->
+                        <div class="pose-badges" id="poseBadges" style="display:none">
+                            <div class="pose-badge green"  id="badge_l_shoulder" data-joint="shoulder"><i class="fas fa-circle" style="font-size:7px"></i> L.Shoulder: --°</div>
+                            <div class="pose-badge blue"   id="badge_r_shoulder" data-joint="shoulder"><i class="fas fa-circle" style="font-size:7px"></i> R.Shoulder: --°</div>
+                            <div class="pose-badge orange" id="badge_l_elbow"    data-joint="elbow">   <i class="fas fa-circle" style="font-size:7px"></i> L.Elbow: --°</div>
+                            <div class="pose-badge purple" id="badge_r_elbow"    data-joint="elbow">   <i class="fas fa-circle" style="font-size:7px"></i> R.Elbow: --°</div>
+                            <div class="pose-badge green"  id="badge_l_knee"     data-joint="knee">    <i class="fas fa-circle" style="font-size:7px"></i> L.Knee: --°</div>
+                            <div class="pose-badge blue"   id="badge_r_knee"     data-joint="knee">    <i class="fas fa-circle" style="font-size:7px"></i> R.Knee: --°</div>
+                        </div>
+
+                        <!--  Remote (telehealth) patient video — shares this same screen -->
+                        <video id="remotePatientVideo" autoplay playsinline style="display:none;position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;"></video>
+                        <!-- Skeleton overlay canvas drawn on top of the patient's WebRTC video,
+                             using the same joint points the patient's own MediaPipe run already sends
+                             over the WS connection (msg.points in the pose_metrics handler below). -->
+                        <canvas id="remoteOverlayCanvas" style="display:none;position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:8;"></canvas>
+                        <div class="remote-doctor-pip" id="remoteDoctorPip" style="display:none">
+                            <video id="remoteDoctorVideo" autoplay playsinline muted></video>
+                        </div>
+                        <div class="no-patient" id="remoteNoPatient" style="display:none">
+                            <i class="fas fa-user fa-2x"></i>
+                            <span>Waiting for patient's video...</span>
+                        </div>
+
+                        <!-- Countdown ring -->
+                        <div class="timer-ring-wrap" id="timerRing">
+                            <svg class="timer-svg" width="72" height="72" viewBox="0 0 72 72">
+                                <circle class="timer-bg"   cx="36" cy="36" r="30"/>
+                                <circle class="timer-fill" id="timerArc" cx="36" cy="36" r="30"
+                                        stroke-dasharray="188.5" stroke-dashoffset="0"/>
+                            </svg>
+                            <div class="timer-text" id="timerText">0:00</div>
+                        </div>
+
+                        <!-- Recording -->
+                        <div class="recording-indicator" id="recIndicator">
+                            <div class="rec-dot"></div> REC
+                        </div>
+
+                        <!-- No pose -->
+                        <div class="no-pose-warning" id="noPoseWarning">
+                            ⚠ No pose detected — move into frame
+                        </div>
+
+                        <!-- Placeholder -->
+                        <div id="cameraPlaceholder" class="camera-placeholder">
+                            <i class="fas fa-wifi fa-3x"></i>
+                            <p>Start a Remote Session or schedule Self Training to begin</p>
+                        </div>
+                    </div>
+
+                    <div class="camera-stats">
+                        <div class="stat-item">
+                            <span class="stat-label">FPS</span>
+                            <span class="stat-value" id="fpsDisplay">--</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Detected</span>
+                            <span class="stat-value" id="detectionStatus">No</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Elapsed</span>
+                            <span class="stat-value" id="sessionTimer">00:00</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Remaining</span>
+                            <span class="stat-value" id="remainingTimer" style="color:#D68F35">--:--</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Exercise Controls -->
+                <div class="exercise-section glass-effect">
+                    <div class="exercise-header">
+                        <h3>Exercise Configuration</h3>
+                    </div>
+                    <div class="exercise-controls">
+                        <div class="form-group">
+                            <label>Exercise Type</label>
+                            <select id="exerciseType" class="form-input">
+                                <option value="Shoulder Rehab">Shoulder Rehab</option>
+                                <option value="Elbow Rehab">Elbow Rehab</option>
+                                <option value="Hand Rehab">Hand Rehab</option>
+                                <option value="Hand Grip Exercise">Hand Grip Exercise (Finger Flexion)</option>
+                                <option value="Hip Rehab">Hip Rehab</option>
+                                <option value="Knee Rehab">Knee Rehab</option>
+                                <option value="Leg Rehab">Leg Rehab</option>
+                                <option value="Ankle Rehab">Ankle Rehab</option>
+                                <option value="Balance Exercise">Balance Exercise</option>
+                                <option value="Squat">Squat</option>
+                                <option value="Arm Raise">Arm Raise</option>
+                                <option value="Shoulder Flexion">Shoulder Flexion</option>
+                                <option value="Knee Flexion">Knee Flexion</option>
+                            </select>
+                        </div>
+
+                        <!-- Duration selector -->
+                        <div class="form-group">
+                            <label>Session Duration</label>
+                            <div class="duration-selector">
+                                <button class="dur-btn active" data-sec="60"  onclick="selectDuration(this,60)">1 min</button>
+                                <button class="dur-btn"        data-sec="120" onclick="selectDuration(this,120)">2 min</button>
+                                <button class="dur-btn"        data-sec="300" onclick="selectDuration(this,300)">5 min</button>
+                                <button class="dur-btn"        data-sec="0"   onclick="selectDuration(this,0)">Custom</button>
+                            </div>
+                            <div class="custom-dur-wrap" id="customDurWrap">
+                                <input type="number" id="customDurInput" min="1" max="60" value="3" placeholder="min">
+                                <span style="font-size:13px;color:var(--text-secondary)">minutes</span>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label>Target Repetitions</label>
+                            <input type="number" id="targetReps" class="form-input" value="10" min="1" max="50">
+                        </div>
+                        <div class="form-group">
+                            <label>Target ROM (°)</label>
+                            <input type="number" id="targetRom" class="form-input" value="90" min="10" max="180">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Analytics -->
+                <div class="analytics-section glass-effect">
+                    <div class="analytics-header"><h3>Live Analytics</h3></div>
+                    <div class="analytics-grid">
+                        <div class="analytics-card">
+                            <span class="analytics-label">Repetitions</span>
+                            <span class="analytics-value" id="repCounter">0 / 0</span>
+                            <div class="progress-bar"><div class="progress-fill" id="repProgress" style="width:0%"></div></div>
+                        </div>
+                        <div class="analytics-card">
+                            <span class="analytics-label">Accuracy</span>
+                            <span class="analytics-value" id="accuracyDisplay">0%</span>
+                            <div class="progress-bar"><div class="progress-fill" id="accuracyProgress" style="width:0%"></div></div>
+                        </div>
+                        <div class="analytics-card">
+                            <span class="analytics-label">Range of Motion</span>
+                            <span class="analytics-value" id="romDisplay">0°</span>
+                            <div class="progress-bar"><div class="progress-fill" id="romProgress" style="width:0%"></div></div>
+                        </div>
+                        <div class="analytics-card">
+                            <span class="analytics-label">Stability</span>
+                            <span class="analytics-value" id="stabilityDisplay">0%</span>
+                            <div class="progress-bar"><div class="progress-fill" id="stabilityProgress" style="width:0%"></div></div>
+                        </div>
+                    </div>
+
+                    <div class="feedback-display" id="feedbackDisplay">
+                        <div class="feedback-message">
+                            <i class="fas fa-info-circle"></i>
+                            <span>Start session to receive feedback</span>
+                        </div>
+                    </div>
+
+                    <div class="joint-angles">
+                        <h4>Joint Angles</h4>
+                        <div class="angle-grid">
+                            <div class="angle-item" data-joint="shoulder"><span class="angle-label">Left Shoulder</span> <span class="angle-value" id="leftShoulderAngle">--°</span></div>
+                            <div class="angle-item" data-joint="shoulder"><span class="angle-label">Right Shoulder</span><span class="angle-value" id="rightShoulderAngle">--°</span></div>
+                            <div class="angle-item" data-joint="elbow"><span class="angle-label">Left Elbow</span>    <span class="angle-value" id="leftElbowAngle">--°</span></div>
+                            <div class="angle-item" data-joint="elbow"><span class="angle-label">Right Elbow</span>   <span class="angle-value" id="rightElbowAngle">--°</span></div>
+                            <div class="angle-item" data-joint="knee"><span class="angle-label">Left Knee</span>     <span class="angle-value" id="leftKneeAngle">--°</span></div>
+                            <div class="angle-item" data-joint="knee"><span class="angle-label">Right Knee</span>    <span class="angle-value" id="rightKneeAngle">--°</span></div>
+                            <div class="angle-item" data-joint="finger"><span class="angle-label">Index Finger</span> <span class="angle-value" id="indexFingerAngle">--°</span></div>
+                            <div class="angle-item" data-joint="finger"><span class="angle-label">Middle Finger</span><span class="angle-value" id="middleFingerAngle">--°</span></div>
+                            <div class="angle-item" data-joint="finger"><span class="angle-label">Ring Finger</span>  <span class="angle-value" id="ringFingerAngle">--°</span></div>
+                            <div class="angle-item" data-joint="finger"><span class="angle-label">Pinky Finger</span> <span class="angle-value" id="pinkyFingerAngle">--°</span></div>
+                            <div class="angle-item" data-joint="finger"><span class="angle-label">Thumb</span>       <span class="angle-value" id="thumbFingerAngle">--°</span></div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Remote / Self Training session lists -->
+            <div class="sessions-lists-row">
+                <div class="sessions-list-panel glass-effect">
+                    <div class="sessions-list-header">
+                        <h3><i class="fas fa-wifi"></i> Remote Sessions</h3>
+                    </div>
+                    <div id="remoteSessionsList">
+                        <div class="session-list-empty">No remote rooms yet — create one above.</div>
+                    </div>
+                </div>
+                <div class="sessions-list-panel glass-effect">
+                    <div class="sessions-list-header">
+                        <h3><i class="fas fa-person-running"></i> Self Training Sessions</h3>
+                        <button class="sessions-list-refresh" onclick="refreshSelfTrainingStatuses()">
+                            <i class="fas fa-rotate"></i> Refresh
+                        </button>
+                    </div>
+                    <div id="selfTrainingSessionsList">
+                        <div class="session-list-empty">No self training sessions scheduled yet.</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+</div>
+
+<!-- Remote (telehealth) Session Modal -->
+<div class="remote-modal" id="remoteModal">
+    <div class="remote-card">
+        <button class="remote-close" onclick="closeRemoteModal()"><i class="fas fa-times"></i></button>
+
+        <!-- Step 1: setup -->
+        <div id="remoteSetupView">
+            <h2><i class="fas fa-wifi"></i> Start Remote Session</h2>
+            <p class="sub">Generate a link and share it with the patient — they'll join from their own phone/laptop.</p>
+
+            <div class="form-group">
+                <label>Patient</label>
+                <select id="remotePatientSelect" class="form-input"></select>
+            </div>
+
+            <div class="form-group">
+                <label>When</label>
+                <input type="datetime-local" id="remoteScheduledAt" class="form-input">
+            </div>
+            <p class="schedule-hint"><i class="fas fa-clock"></i> Link stays active for 2 hours after this time.</p>
+
+            <button class="btn-primary" id="remoteGenerateBtn" onclick="generateRemoteLink()" style="width:100%;margin-top:8px">
+                <i class="fas fa-link"></i> Generate Link
+            </button>
+
+            <div id="remoteLinkBox" style="display:none">
+                <div class="remote-link-row">
+                    <input type="text" id="remoteLinkInput" readonly>
+                    <button class="btn-secondary" onclick="copyRemoteLink()"><i class="fas fa-copy"></i></button>
+                </div>
+                <div class="schedule-summary" id="remoteScheduleSummary"></div>
+                <div class="remote-status-line">
+                    <span class="remote-status-dot" id="remoteStatusDot"></span>
+                    <span id="remoteStatusText">Room ready — find it in the "Remote Sessions" list below and click "Join Room" when you're ready to start the call.</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Step 2: live call — video + joint angles now show in the main
+             camera screen above (same box used for local sessions); this
+             panel just holds status + call controls -->
+        <div id="remoteLiveView" style="display:none">
+            <h2><i class="fas fa-video"></i> Live Remote Session</h2>
+            <p class="sub" id="remoteLiveSub">Connected — video &amp; analytics are on the main screen above</p>
+
+            <div class="remote-controls-row">
+                <button class="btn-secondary" id="remoteMicBtn" onclick="toggleRemoteMic()"><i class="fas fa-microphone"></i> Mute</button>
+                <button class="btn-secondary" id="remoteCamBtn" onclick="toggleRemoteCam()"><i class="fas fa-video"></i> Camera</button>
+                <button class="btn-danger" onclick="endRemoteSession()"><i class="fas fa-phone-slash"></i> End Session</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Self Training Session Modal — doctor schedules it, patient does the
+     exercise ALONE later at the scheduled time (link valid 2h from then).
+     No live view here — nothing to watch until the patient's link is used
+     and results land in Reports/Analytics like a normal session. -->
+<div class="remote-modal" id="selfTrainingModal">
+    <div class="remote-card">
+        <button class="remote-close" onclick="closeSelfTrainingModal()"><i class="fas fa-times"></i></button>
+
+        <h2><i class="fas fa-person-running"></i> Schedule Self Training</h2>
+        <p class="sub">Patient gets a link to do the exercise alone, at their scheduled time — reps/angles/accuracy save straight to their record, same as any other session.</p>
+
+        <div class="form-group">
+            <label>Patient</label>
+            <select id="selfTrainingPatientSelect" class="form-input"></select>
+        </div>
+
+        <div class="form-group">
+            <label>When</label>
+            <input type="datetime-local" id="selfTrainingScheduledAt" class="form-input">
+        </div>
+        <p class="schedule-hint"><i class="fas fa-clock"></i> Link stays active for 2 hours after this time.</p>
+
+        <button class="btn-primary" id="selfTrainingGenerateBtn" onclick="generateSelfTrainingLink()" style="width:100%;margin-top:8px">
+            <i class="fas fa-link"></i> Generate Link
+        </button>
+
+        <div id="selfTrainingLinkBox" style="display:none">
+            <div class="remote-link-row">
+                <input type="text" id="selfTrainingLinkInput" readonly>
+                <button class="btn-secondary" onclick="copySelfTrainingLink()"><i class="fas fa-copy"></i></button>
+            </div>
+            <div class="schedule-summary" id="selfTrainingScheduleSummary"></div>
+        </div>
+    </div>
+</div>
+<!-- Session Result Modal -->
+<div class="result-modal" id="resultModal">
+    <div class="result-card">
+        <div class="result-header">
+            <div class="result-icon"><i class="fas fa-trophy"></i></div>
+            <h2>Session Complete!</h2>
+            <p id="resultSubtitle">Great work — here's your summary</p>
+        </div>
+
+        <!-- Summary stats -->
+        <div class="result-stats">
+            <div class="result-stat">
+                <div class="val" id="res_duration">0:00</div>
+                <div class="lbl">Duration</div>
+            </div>
+            <div class="result-stat">
+                <div class="val" id="res_accuracy" style="color:#1D8A6D">0%</div>
+                <div class="lbl">Avg Accuracy</div>
+            </div>
+            <div class="result-stat">
+                <div class="val" id="res_rom" style="color:#3E6FD9">0°</div>
+                <div class="lbl">Avg ROM</div>
+            </div>
+            <div class="result-stat">
+                <div class="val" id="res_stability" style="color:#8B5FC7">0%</div>
+                <div class="lbl">Avg Stability</div>
+            </div>
+        </div>
+
+        <!-- Progress chart over time -->
+        <div class="result-chart-wrap">
+            <canvas id="resultChart"></canvas>
+        </div>
+
+        <div class="result-actions">
+            <button class="btn-primary" onclick="closeResult()">
+                <i class="fas fa-redo"></i> New Session
+            </button>
+            <button class="btn-secondary" onclick="window.location.href='/reports'">
+                <i class="fas fa-file-alt"></i> View Reports
+            </button>
+            <button class="btn-secondary" onclick="window.location.href='/analytics'">
+                <i class="fas fa-chart-line"></i> Analytics
+            </button>
+        </div>
+    </div>
+</div>
+
+<script>
+// State
+let sessionActive    = false;
+let isRemoteMode     = false;   // true once a remote patient's video is driving the shared camera screen
+let sessionStartTime = null;
+let countdownTotal   = 60;       // seconds
+let countdownLeft    = 60;
+let countdownTimer   = null;
+let elapsedTimer     = null;
+let elapsedSec       = 0;
+
+let currentAccuracy   = 0;
+let currentRom        = 0;
+let currentStability  = 0;
+let currentSmoothness = 100;   //  real — from backend frame-jerk variance
+let currentBalance    = 100;   //  real — from backend shoulder-sway variance
+let currentFatigue    = 0;     //  real — from backend rep-quality decline trend
+let repCount         = 0;
+
+let poseDetected     = false;
+
+// Time-series data for result chart
+let _timeline = [];   // [{t, acc, rom, stab}]
+let _timelineTimer = null;
+
+let resultChartInst  = null;
+
+// ── Remote / Self Training session lists (shown below the main session UI) ─
+// Persisted in localStorage (same pattern as PENDING_SESSIONS_KEY above) so
+// the doctor doesn't lose track of created rooms on a page refresh.
+const REMOTE_LIST_KEY = 'rehabai_remote_room_list';
+const SELF_LIST_KEY   = 'rehabai_self_training_list';
+
+function loadList(key) {
+    try { return JSON.parse(localStorage.getItem(key) || '[]'); }
+    catch (e) { return []; }
+}
+function saveList(key, list) {
+    try { localStorage.setItem(key, JSON.stringify(list)); }
+    catch (e) { console.error('saveList:', e); }
+}
+
+let remoteSessionsList       = loadList(REMOTE_LIST_KEY);
+let selfTrainingSessionsList = loadList(SELF_LIST_KEY);
+
+// Boot 
+document.addEventListener('DOMContentLoaded', () => {
+    loadPatients();
+    retryPendingSessions();
+    renderRemoteSessionsList();
+    renderSelfTrainingSessionsList();
+    refreshSelfTrainingStatuses();
+    setInterval(refreshSelfTrainingStatuses, 20000);
+    document.getElementById('menuToggle')?.addEventListener('click', () =>
+        document.querySelector('.sidebar').classList.toggle('active'));
+});
+
+// Patients
+async function loadPatients() {
+    try {
+        const pts = await (await fetch('/api/patients')).json();
+        const sel = document.getElementById('sessionPatientSelect');
+        pts.forEach(p => {
+            const o = document.createElement('option');
+            o.value = p.id; o.textContent = p.name;
+            sel.appendChild(o);
+        });
+    } catch(e) { console.error(e); }
+}
+
+// Duration selector
+function selectDuration(btn, sec) {
+    document.querySelectorAll('.dur-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const wrap = document.getElementById('customDurWrap');
+    if (sec === 0) {
+        wrap.classList.add('show');
+        countdownTotal = parseInt(document.getElementById('customDurInput').value || 3) * 60;
+    } else {
+        wrap.classList.remove('show');
+        countdownTotal = sec;
+    }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    document.getElementById('customDurInput')?.addEventListener('input', e => {
+        countdownTotal = Math.max(1, parseInt(e.target.value || 1)) * 60;
+    });
+});
+
+// Clinic/local-camera mode has been removed — every session now runs
+// through either Remote (openRemoteModal) or Self Training
+// (openSelfTrainingModal). applyActiveJointUI() just dims badges for the
+// currently-selected exercise; the actual exercise sync for a live Remote
+// call happens via syncRemoteExerciseConfig() further down.
+
+// ─── Which joints/connections are relevant for a given exercise type ──────
+// This is now the SINGLE SOURCE OF TRUTH shared by:
+//   1. applyActiveJointUI()   — dims irrelevant badges/angle-grid items
+//   2. drawRemoteSkeleton()   — draws only the relevant dot-connections
+// It is an EXACT copy of patient.html's getActiveConnections(), so the
+// doctor's page and the patient's page always agree on which joints are
+// "active" for a given exercise.
+// Hand Grip / Finger Flexion connection set — exact copy of patient.html's
+// HAND_CONNECTIONS_NAMED, so the doctor's drawRemoteSkeleton() draws the
+// same finger skeleton the patient sees on their own screen.
+const HAND_CONNECTIONS_NAMED = [
+    ['wrist','thumb_cmc'],['thumb_cmc','thumb_mcp'],['thumb_mcp','thumb_ip'],['thumb_ip','thumb_tip'],
+    ['wrist','index_mcp'],['index_mcp','index_pip'],['index_pip','index_dip'],['index_dip','index_tip'],
+    ['wrist','middle_mcp'],['middle_mcp','middle_pip'],['middle_pip','middle_dip'],['middle_dip','middle_tip'],
+    ['wrist','ring_mcp'],['ring_mcp','ring_pip'],['ring_pip','ring_dip'],['ring_dip','ring_tip'],
+    ['wrist','pinky_mcp'],['pinky_mcp','pinky_pip'],['pinky_pip','pinky_dip'],['pinky_dip','pinky_tip'],
+    ['index_mcp','middle_mcp'],['middle_mcp','ring_mcp'],['ring_mcp','pinky_mcp'],
+];
+
+function getActiveConnections(exerciseType) {
+    const ex = (exerciseType || '').toLowerCase();
+    const LS='left_shoulder', RS='right_shoulder', LE='left_elbow', RE='right_elbow',
+          LW='left_wrist', RW='right_wrist', LH='left_hip', RH='right_hip',
+          LK='left_knee', RK='right_knee', LA='left_ankle', RA='right_ankle';
+
+    if (ex.includes('grip') || ex.includes('finger')) return HAND_CONNECTIONS_NAMED;
+    if (ex.includes('elbow'))  return [[LS,LE],[LE,LW],[RS,RE],[RE,RW]];
+    if (ex.includes('hand'))   return [[LE,LW],[RE,RW]];
+    if (ex.includes('ankle'))  return [[LK,LA],[RK,RA]];
+    if (ex.includes('knee') || ex.includes('squat') || ex.includes('leg'))
+        return [[LH,LK],[LK,LA],[RH,RK],[RK,RA]];
+    if (ex.includes('hip'))    return [[LS,LH],[RS,RH],[LH,LK],[RH,RK]];
+    if (ex.includes('shoulder') || ex.includes('arm'))
+        return [[LS,LE],[RS,RE],[LS,LH],[RS,RH]];
+    if (ex.includes('balance'))
+        return [[LS,RS],[LS,LH],[RS,RH],[LH,RH],
+                [LS,LE],[LE,LW],[RS,RE],[RE,RW],
+                [LH,LK],[LK,LA],[RH,RK],[RK,RA]];
+    return [[LS,LE],[LE,LW],[RS,RE],[RE,RW],[LH,LK],[LK,LA],[RH,RK],[RK,RA]];
+}
+
+// Which BADGE/ANGLE-GRID group (shoulder/elbow/knee/all) lights up for the
+// current exercise. session.html's UI only has shoulder/elbow/knee badges
+// (no dedicated hand/ankle/hip badges), so those exercise types are mapped
+// to the closest existing group instead of silently falling through to a
+// wrong default.
+function getActiveJointGroup() {
+    const ex = (document.getElementById('exerciseType')?.value || '').toLowerCase();
+    if (ex.includes('balance'))                                  return 'all';
+    if (ex.includes('grip') || ex.includes('finger'))            return 'finger'; // Hand Grip Exercise — MediaPipe Hands, dedicated group
+    if (ex.includes('hand'))                                     return 'elbow'; // old pose-only Hand Rehab — no dedicated hand badge, closest group
+    if (ex.includes('ankle'))                                    return 'knee';  // no dedicated ankle badge — closest group
+    if (ex.includes('hip'))                                      return 'all';   // spans shoulder+knee area — show all rather than mis-dim
+    if (ex.includes('shoulder') || ex.includes('arm'))           return 'shoulder';
+    if (ex.includes('elbow'))                                    return 'elbow';
+    if (ex.includes('knee') || ex.includes('squat') || ex.includes('leg'))
+        return 'knee';
+    return 'elbow'; // fallback, matches backend default
+}
+
+// Dim every joint badge/angle-item except the one(s) relevant to the
+// currently selected exercise, and reset the dimmed ones to "--°" so old
+// numbers from a previous exercise don't linger and look "live".
+function applyActiveJointUI() {
+    const active = getActiveJointGroup();
+    document.querySelectorAll('[data-joint]').forEach(el => {
+        const isActive = active === 'all' || el.dataset.joint === active;
+        el.classList.toggle('joint-inactive', !isActive);
+        el.classList.toggle('joint-active', isActive);
+        if (!isActive) {
+            const valSpan = el.querySelector('.angle-value');
+            if (valSpan) valSpan.textContent = '--°';
+        }
+    });
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    applyActiveJointUI();
+    document.getElementById('exerciseType')?.addEventListener('change', () => {
+        applyActiveJointUI();
+        if (isRemoteMode) syncRemoteExerciseConfig();
+    });
+    document.getElementById('targetRom')?.addEventListener('change', () => {
+        if (isRemoteMode) syncRemoteExerciseConfig();
+    });
+});
+
+// Pose data handler 
+function handlePoseData(data) {
+    poseDetected = !!data.detected;
+
+    document.getElementById('noPoseWarning').style.display  = poseDetected ? 'none' : 'block';
+    document.getElementById('detectionStatus').textContent  = poseDetected ? 'Yes' : 'No';
+    document.getElementById('detectionStatus').style.color  = poseDetected ? '#1D8A6D' : '#D9503E';
+    if (!poseDetected) return;
+
+    const ang = data.angles || {};
+    const set  = (id, v) => document.getElementById(id).textContent = v != null ? `${Math.round(v)}°` : '--°';
+    const active = getActiveJointGroup();
+    const targetRom = parseInt(document.getElementById('targetRom').value);
+
+    if (active === 'all' || active === 'shoulder') {
+        set('leftShoulderAngle', ang.l_shoulder);
+        set('rightShoulderAngle',ang.r_shoulder);
+        updateBadge('badge_l_shoulder','L.Shoulder', ang.l_shoulder, targetRom);
+        updateBadge('badge_r_shoulder','R.Shoulder', ang.r_shoulder, targetRom);
+    }
+    if (active === 'all' || active === 'elbow') {
+        set('leftElbowAngle',    ang.l_elbow);
+        set('rightElbowAngle',   ang.r_elbow);
+        updateBadge('badge_l_elbow',   'L.Elbow',   ang.l_elbow, targetRom);
+        updateBadge('badge_r_elbow',   'R.Elbow',   ang.r_elbow, targetRom);
+    }
+    if (active === 'all' || active === 'knee') {
+        set('leftKneeAngle',     ang.l_knee);
+        set('rightKneeAngle',    ang.r_knee);
+        updateBadge('badge_l_knee',    'L.Knee',    ang.l_knee,  targetRom);
+        updateBadge('badge_r_knee',    'R.Knee',    ang.r_knee,  targetRom);
+    }
+    if (active === 'all' || active === 'finger') {
+        // ang.index/middle/ring/pinky/thumb come from MediaPipe Hands
+        // finger-curl calculation (see metrics.compute_finger_curl_angles) —
+        // ~170-180° = extended, ~40-70° = curled into a fist.
+        set('indexFingerAngle',  ang.index);
+        set('middleFingerAngle', ang.middle);
+        set('ringFingerAngle',   ang.ring);
+        set('pinkyFingerAngle',  ang.pinky);
+        set('thumbFingerAngle',  ang.thumb);
+    }
+
+    // Reps, stability, smoothness, balance, fatigue now ALL come straight
+    // from the backend (real MediaPipe computation — no Math.random, no
+    // metric copied from another metric)
+    if (sessionActive) {
+        try {
+            repCount = data.reps != null ? data.reps : repCount;
+            if (data.stability  != null) currentStability  = data.stability;
+            if (data.smoothness != null) currentSmoothness = data.smoothness;
+            if (data.balance    != null) currentBalance    = data.balance;
+            if (data.fatigue    != null) currentFatigue    = data.fatigue;
+            updateAnalytics(data.primary_angle, targetRom);
+        } catch (err) {
+            console.error('Live Analytics update failed:', err, { data, targetRom, sessionActive });
+        }
+    }
+}
+
+function updateBadge(id, label, angle, targetRom) {
+    const el  = document.getElementById(id);
+    if (!el) return;
+    const val = angle != null ? Math.round(angle) : null;
+    el.innerHTML = `<i class="fas fa-circle" style="font-size:7px"></i> ${label}: ${val!=null?val+'°':'--°'}`;
+    if (val == null) return;
+    const pct = val / targetRom;
+    el.className = 'pose-badge ' + (pct >= 0.85 ? 'green' : pct >= 0.6 ? 'orange' : 'red');
+}
+
+// Session start / stop  (clinic mode removed — Remote is the only path
+// startSession()/stopSession() drive now; Self Training records itself on
+// the patient's device via patient.html, no doctor timer involved)
+function startSession() {
+    if (!document.getElementById('sessionPatientSelect').value) {
+        showToast('Please select a patient', 'error'); return;
+    }
+    if (!isRemoteMode || !remotePatientConnected) {
+        showToast('Start a Remote Session and wait for the patient to join first', 'error'); return;
+    }
+
+    // Read custom duration if selected
+    const customBtn = document.querySelector('.dur-btn[data-sec="0"].active');
+    if (customBtn) {
+        countdownTotal = Math.max(1, parseInt(document.getElementById('customDurInput').value||1)) * 60;
+    }
+
+    sessionActive    = true;
+    sessionStartTime = Date.now();
+    countdownLeft    = countdownTotal;
+    elapsedSec       = 0;
+    repCount = currentAccuracy = currentRom = 0;
+    currentStability  = 100;
+    currentSmoothness = 100;
+    currentBalance    = 100;
+    currentFatigue    = 0;
+    _timeline = [];
+
+    // Remote patient does its own rep-counting/stability/etc. on their
+    // device — just push the current exercise/ROM config to them so their
+    // thresholds match what the doctor selected.
+    syncRemoteExerciseConfig();
+
+    document.getElementById('startSessionBtn').style.display = 'none';
+    document.getElementById('stopSessionBtn').style.display  = 'inline-block';
+    document.getElementById('statusText').textContent        = 'Session Active';
+    document.getElementById('statusDot').className           = 'badge-dot recording';
+    document.getElementById('recIndicator').classList.add('active');
+    document.getElementById('timerRing').classList.add('active');
+
+    updateTimerRing();
+
+    // Elapsed timer
+    elapsedTimer = setInterval(() => {
+        elapsedSec++;
+        const m = String(Math.floor(elapsedSec/60)).padStart(2,'0');
+        const s = String(elapsedSec%60).padStart(2,'0');
+        document.getElementById('sessionTimer').textContent = `${m}:${s}`;
+    }, 1000);
+
+    // Countdown timer
+    countdownTimer = setInterval(() => {
+        countdownLeft--;
+        updateTimerRing();
+
+        const rm = String(Math.floor(countdownLeft/60)).padStart(2,'0');
+        const rs = String(countdownLeft%60).padStart(2,'0');
+        document.getElementById('remainingTimer').textContent = `${rm}:${rs}`;
+
+        // Color warning when < 10s
+        const arc = document.getElementById('timerArc');
+        if (countdownLeft <= 10) arc.style.stroke = '#D9503E';
+        else if (countdownLeft <= 30) arc.style.stroke = '#D68F35';
+        else arc.style.stroke = '#1D8A6D';
+
+        if (countdownLeft <= 0) {
+            showToast('⏰ Time up! Session ending...', 'success');
+            stopSession();
+        }
+    }, 1000);
+
+    // Record timeline every 5s
+    _timelineTimer = setInterval(() => {
+        if (sessionActive) {
+            _timeline.push({
+                t:      elapsedSec,
+                acc:    +currentAccuracy.toFixed(1),
+                rom:    +currentRom.toFixed(1),
+                stab:   +currentStability.toFixed(1),
+                smooth: +currentSmoothness.toFixed(1),
+                bal:    +currentBalance.toFixed(1),
+                fat:    +currentFatigue.toFixed(1),
+            });
+        }
+    }, 5000);
+
+    showToast('Session started!', 'success');
+}
+
+function stopSession() {
+    if (!sessionActive) return;
+    sessionActive = false;
+
+    clearInterval(countdownTimer);
+    clearInterval(elapsedTimer);
+    clearInterval(_timelineTimer);
+
+    document.getElementById('startSessionBtn').style.display = 'inline-block';
+    document.getElementById('stopSessionBtn').style.display  = 'none';
+    const stillConnected = isRemoteMode && remotePatientConnected;
+    document.getElementById('statusText').textContent        = stillConnected ? 'Connected' : 'Ready';
+    document.getElementById('statusDot').className           = stillConnected ? 'badge-dot online' : 'badge-dot offline';
+    document.getElementById('recIndicator').classList.remove('active');
+    document.getElementById('timerRing').classList.remove('active');
+    document.getElementById('remainingTimer').textContent    = '--:--';
+
+    saveSession();
+    showResultModal();
+
+    // If this was a remote (telehealth) session, closing the exercise
+    // timer should also end the call + close the patient's link — the
+    // patient shouldn't stay connected indefinitely just because the
+    // doctor forgot to click "End Remote Session" manually.
+    if (isRemoteMode && remoteRoomId) {
+        endRemoteSession(true);
+    }
+}
+
+function updateTimerRing() {
+    const circ  = 188.5;
+    const pct   = countdownLeft / countdownTotal;
+    const offset = circ * (1 - pct);
+    document.getElementById('timerArc').style.strokeDashoffset = offset;
+    const m = String(Math.floor(countdownLeft/60)).padStart(2,'0');
+    const s = String(countdownLeft%60).padStart(2,'0');
+    document.getElementById('timerText').textContent = `${m}:${s}`;
+}
+
+// Analytics update (fully derived from real backend data, no Math.random) 
+function updateAnalytics(primaryAngle, targetRom) {
+    if (primaryAngle != null && targetRom > 0) {
+        currentRom      = Math.min(targetRom, Math.max(0, primaryAngle));
+        currentAccuracy = Math.min(100, (currentRom / targetRom) * 100);
+    }
+
+    const targetReps = parseInt(document.getElementById('targetReps').value);
+    document.getElementById('accuracyDisplay').textContent   = `${Math.round(currentAccuracy)}%`;
+    document.getElementById('accuracyProgress').style.width  = `${currentAccuracy}%`;
+    document.getElementById('romDisplay').textContent        = `${Math.round(currentRom)}°`;
+    document.getElementById('romProgress').style.width       = `${(currentRom/targetRom)*100}%`;
+    document.getElementById('stabilityDisplay').textContent  = `${Math.round(currentStability)}%`;
+    document.getElementById('stabilityProgress').style.width = `${currentStability}%`;
+    document.getElementById('repCounter').textContent        = `${repCount} / ${targetReps}`;
+    document.getElementById('repProgress').style.width       = `${Math.min(100, (repCount/targetReps)*100)}%`;
+
+    updateFeedback(currentAccuracy, currentRom);
+}
+
+function updateFeedback(acc, rom) {
+    const t = parseInt(document.getElementById('targetRom').value);
+    let msg, icon, cls;
+    if (acc>85&&rom>t*0.8)      { msg='Excellent form! Keep it up!';            icon='fa-check-circle';       cls='success'; }
+    else if (acc>70&&rom>t*0.6) { msg='Good progress. Focus on range of motion.'; icon='fa-thumbs-up';         cls='warning'; }
+    else if (acc>50)            { msg='Needs improvement. Adjust your posture.';  icon='fa-exclamation-triangle'; cls='warning'; }
+    else                        { msg='Consult your therapist for guidance.';     icon='fa-exclamation-circle'; cls='error'; }
+    document.getElementById('feedbackDisplay').innerHTML =
+        `<div class="feedback-message ${cls}"><i class="fas ${icon}"></i><span>${msg}</span></div>`;
+}
+
+// Result modal 
+function showResultModal() {
+    const avgAcc  = _timeline.length ? (_timeline.reduce((s,r)=>s+r.acc, 0) / _timeline.length).toFixed(1) : currentAccuracy.toFixed(1);
+    const avgRom  = _timeline.length ? (_timeline.reduce((s,r)=>s+r.rom, 0) / _timeline.length).toFixed(1) : currentRom.toFixed(1);
+    const avgStab = _timeline.length ? (_timeline.reduce((s,r)=>s+r.stab,0) / _timeline.length).toFixed(1) : currentStability.toFixed(1);
+
+    const durSec  = elapsedSec;
+    const durStr  = `${String(Math.floor(durSec/60)).padStart(2,'0')}:${String(durSec%60).padStart(2,'0')}`;
+
+    document.getElementById('res_duration').textContent = durStr;
+    document.getElementById('res_accuracy').textContent  = `${avgAcc}%`;
+    document.getElementById('res_rom').textContent       = `${avgRom}°`;
+    document.getElementById('res_stability').textContent = `${avgStab}%`;
+
+    const ex = document.getElementById('exerciseType').value;
+    document.getElementById('resultSubtitle').textContent =
+        `${ex} · ${durStr} · ${document.querySelector('#sessionPatientSelect option:checked')?.textContent || ''}`;
+
+    // Build chart
+    if (resultChartInst) { resultChartInst.destroy(); resultChartInst = null; }
+
+    const labels = _timeline.length
+        ? _timeline.map(r => `${Math.floor(r.t/60)}:${String(r.t%60).padStart(2,'0')}`)
+        : ['Start', 'End'];
+    const accData  = _timeline.length ? _timeline.map(r=>r.acc)  : [0, +avgAcc];
+    const romData  = _timeline.length ? _timeline.map(r=>r.rom)  : [0, +avgRom];
+    const stabData = _timeline.length ? _timeline.map(r=>r.stab) : [0, +avgStab];
+
+    const ctx = document.getElementById('resultChart').getContext('2d');
+    resultChartInst = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels,
+            datasets: [
+                { label:'Accuracy %',  data:accData,  borderColor:'#1D8A6D', backgroundColor:'rgba(29,138,109,0.1)',
+                  tension:0.4, fill:true, borderWidth:2, pointRadius:3, pointBackgroundColor:'#1D8A6D' },
+                { label:'ROM °',       data:romData,  borderColor:'#3E6FD9', backgroundColor:'rgba(59,91,165,0.1)',
+                  tension:0.4, fill:true, borderWidth:2, pointRadius:3, pointBackgroundColor:'#3E6FD9' },
+                { label:'Stability %', data:stabData, borderColor:'#8B5FC7', backgroundColor:'rgba(122,92,142,0.1)',
+                  tension:0.4, fill:true, borderWidth:2, pointRadius:3, pointBackgroundColor:'#8B5FC7' },
+            ]
+        },
+        options: {
+            responsive:true, maintainAspectRatio:false,
+            plugins:{
+                legend:{ display:true, position:'top',
+                    labels:{ usePointStyle:true, pointStyle:'circle', padding:16, font:{size:11} }},
+                tooltip:{ backgroundColor:'rgba(255,255,255,0.95)',
+                    titleColor:'#1a2332', bodyColor:'#5a6b7c',
+                    borderColor:'rgba(0,0,0,0.08)', borderWidth:1, cornerRadius:10, padding:10 }
+            },
+            scales:{
+                y:{ beginAtZero:true, max:Math.max(100, Math.ceil(+avgRom/10)*10+10),
+                    grid:{color:'rgba(0,0,0,0.04)'}, ticks:{font:{size:10}} },
+                x:{ grid:{display:false}, ticks:{font:{size:10}, maxRotation:45} }
+            },
+            interaction:{ intersect:false, mode:'index' }
+        }
+    });
+
+    document.getElementById('resultModal').classList.add('active');
+}
+
+function closeResult() {
+    document.getElementById('resultModal').classList.remove('active');
+    if (resultChartInst) { resultChartInst.destroy(); resultChartInst=null; }
+    // Reset UI
+    currentAccuracy=currentRom=currentStability=repCount=elapsedSec=0;
+    currentSmoothness=100; currentBalance=100; currentFatigue=0;
+    document.getElementById('sessionTimer').textContent    = '00:00';
+    document.getElementById('remainingTimer').textContent  = '--:--';
+    document.getElementById('accuracyDisplay').textContent = '0%';
+    document.getElementById('romDisplay').textContent      = '0°';
+    document.getElementById('stabilityDisplay').textContent= '0%';
+    document.getElementById('repCounter').textContent      = '0 / 0';
+    ['accuracyProgress','romProgress','stabilityProgress','repProgress']
+        .forEach(id => document.getElementById(id).style.width='0%');
+    document.getElementById('feedbackDisplay').innerHTML =
+        '<div class="feedback-message"><i class="fas fa-info-circle"></i><span>Start session to receive feedback</span></div>';
+}
+
+// Save session
+async function saveSession() {
+    const patientId    = document.getElementById('sessionPatientSelect').value;
+    const exerciseType = document.getElementById('exerciseType').value;
+    const targetReps   = parseInt(document.getElementById('targetReps').value);
+
+    const jointAngles = [];
+    document.querySelectorAll('.angle-item').forEach(item => {
+        const label = item.querySelector('.angle-label').textContent;
+        const val   = item.querySelector('.angle-value').textContent;
+        if (val !== '--°') jointAngles.push({
+            joint_name:  label.toLowerCase().replace(/\s+/g,'_'),
+            angle_value: parseFloat(val),
+        });
+    });
+
+    // All 6 metrics below are real independent averages pulled from the
+    // session timeline, which itself is fed live from backend MediaPipe
+    // calculations (angles, rep-cycle counter, hip jitter, shoulder sway,
+    // frame-jerk variance, rep-quality trend). Nothing here is copied from
+    // another metric or randomly generated.
+    const avg = (key, fallback) =>
+        _timeline.length ? _timeline.reduce((s,r)=>s+r[key], 0)/_timeline.length : fallback;
+
+    const avgAcc    = avg('acc',    currentAccuracy);
+    const avgRom    = avg('rom',    currentRom);
+    const avgStab   = avg('stab',   currentStability);
+    const avgSmooth = avg('smooth', currentSmoothness);
+    const avgBal    = avg('bal',    currentBalance);
+    const avgFat    = avg('fat',    currentFatigue);
+
+    const payload = {
+        patient_id:          patientId,
+        exercise_type:       exerciseType,
+        start_time:          new Date(sessionStartTime).toISOString(),
+        end_time:            new Date().toISOString(),
+        duration_seconds:    elapsedSec,
+        total_reps:          targetReps,
+        completed_reps:      repCount,
+        accuracy_percentage: +avgAcc.toFixed(1),
+        average_rom:         +avgRom.toFixed(1),
+        stability_score:     +avgStab.toFixed(1),
+        balance_score:       +avgBal.toFixed(1),
+        movement_smoothness: +avgSmooth.toFixed(1),
+        fatigue_estimation:  +avgFat.toFixed(1),
+        recovery_score:      +((avgAcc + avgStab + avgRom + avgBal) / 4).toFixed(1),
+        incorrect_movements: Math.max(0, targetReps - repCount),
+        joint_angles:        jointAngles,
+        exercise_results:    [],
+        session_data:        { timeline: _timeline },
+    };
+
+    return saveSessionPayload(payload);
+}
+
+// Actually performs the save + handles success/failure UI. Returns true/false.
+async function saveSessionPayload(payload) {
+    try {
+        const res  = await fetch('/api/sessions', {
+            method: 'POST',
+            headers: { 'Content-Type':'application/json' },
+            body: JSON.stringify(payload),
+        });
+
+        if (!res.ok) {
+            let msg = `Session save failed (${res.status})`;
+            try { msg = (await res.json()).detail || msg; } catch (_) {}
+            console.error('saveSession failed:', msg);
+            stashFailedSession(payload);
+            showToast(`${msg} — saved locally, will retry`, 'error', 5000);
+            return false;
+        }
+
+        // Success — make sure no stale local backup is replayed on top of it.
+        clearStashedSession(payload);
+        showToast('Session saved', 'success');
+        return true;
+    } catch (e) {
+        console.error('saveSession network error:', e);
+        stashFailedSession(payload);
+        showToast('No connection — session saved locally, will retry', 'error', 5000);
+        return false;
+    }
+}
+
+// Local backup so a failed save isn't lost
+const PENDING_SESSIONS_KEY = 'rehabai_pending_sessions';
+
+function stashFailedSession(payload) {
+    try {
+        const pending = JSON.parse(localStorage.getItem(PENDING_SESSIONS_KEY) || '[]');
+        pending.push(payload);
+        localStorage.setItem(PENDING_SESSIONS_KEY, JSON.stringify(pending));
+    } catch (e) { console.error('stashFailedSession:', e); }
+}
+
+function clearStashedSession(payload) {
+    try {
+        const pending = JSON.parse(localStorage.getItem(PENDING_SESSIONS_KEY) || '[]');
+        const remaining = pending.filter(p => JSON.stringify(p) !== JSON.stringify(payload));
+        localStorage.setItem(PENDING_SESSIONS_KEY, JSON.stringify(remaining));
+    } catch (e) { console.error('clearStashedSession:', e); }
+}
+
+// Retry any sessions that failed to save earlier (e.g. network drop), called on page load.
+async function retryPendingSessions() {
+    let pending = [];
+    try { pending = JSON.parse(localStorage.getItem(PENDING_SESSIONS_KEY) || '[]'); }
+    catch (e) { return; }
+    if (!pending.length) return;
+
+    showToast(`Retrying ${pending.length} unsaved session(s)...`, 'success');
+    for (const payload of pending) {
+        await saveSessionPayload(payload);
+    }
+}
+
+// Misc
+function handleLogout() {
+    if (sessionActive && !confirm('Session in progress. Stop and logout?')) return;
+    if (sessionActive) stopSession();
+    window.location.href = '/';
+}
+
+function showToast(message, type='success', duration=3500) {
+    document.querySelectorAll('.toast').forEach(t=>t.remove());
+    const t = document.createElement('div');
+    t.className = `toast ${type}`;
+    t.innerHTML = `<i class="fas fa-${type==='success'?'check-circle':'exclamation-circle'}"></i><span>${message}</span>`;
+    document.body.appendChild(t);
+    setTimeout(()=>t.classList.add('show'),100);
+    setTimeout(()=>{ t.classList.remove('show'); setTimeout(()=>t.remove(),300); },duration);
+}
+</script>
+
+<script>
+// Remote (telehealth) Session — doctor side
+// Self-contained: separate state/functions (prefixed `remote`) so this never
+// touches the existing local/in-clinic camera + pose polling logic above.
+let remoteRoomId      = null;
+let _remoteKickedByOtherDevice = false; // item 3 — set true when this tab is replaced by a newer doctor connection
+let remoteToken       = null;
+let remoteWs          = null;
+let remotePeerConn    = null;
+let remoteLocalStream = null;
+let remoteMicOn = true, remoteCamOn = true;
+let remotePatientConnected = false;
+
+// ─── Skeleton overlay drawing for the remote patient's video ──────────────
+// The patient's own page (patient.html) already runs MediaPipe locally and
+// sends the computed joint points (normalized 0..1 coords, already filtered
+// to only the joints relevant to the active exercise) over the WS signaling
+// channel as part of the `pose_metrics` message.
+//
+// Note: unlike the patient's own local preview (which mirrors its video for
+// a natural "selfie" feel via CSS scaleX(-1)), the doctor's incoming
+// WebRTC video is NOT mirrored — a video call convention (you see the other
+// person as they actually appear, not flipped). The raw landmark points sent
+// over the wire are in that same *unmirrored* coordinate space, so this
+// draws them directly with no horizontal flip, matching remotePatientVideo's
+// own lack of a mirror transform.
+function resizeRemoteOverlayCanvas() {
+    const canvas = document.getElementById('remoteOverlayCanvas');
+    const video  = document.getElementById('remotePatientVideo');
+    if (!canvas || !video) return;
+    canvas.width  = video.clientWidth  || canvas.parentElement.clientWidth;
+    canvas.height = video.clientHeight || canvas.parentElement.clientHeight;
+}
+
+function getRemoteCoverTransform(video, canvas) {
+    const vw = video.videoWidth, vh = video.videoHeight;
+    const cw = canvas.width, ch = canvas.height;
+    if (!vw || !vh) return { offsetX: 0, offsetY: 0, drawW: cw, drawH: ch };
+    const scale = Math.max(cw / vw, ch / vh);
+    const drawW = vw * scale, drawH = vh * scale;
+    return { offsetX: (cw - drawW) / 2, offsetY: (ch - drawH) / 2, drawW, drawH };
+}
+
+function drawRemoteSkeleton(points, exerciseType) {
+    const canvas = document.getElementById('remoteOverlayCanvas');
+    const video  = document.getElementById('remotePatientVideo');
+    if (!canvas || !video) return;
+
+    if (canvas.width !== (video.clientWidth || 0) || canvas.height !== (video.clientHeight || 0)) {
+        resizeRemoteOverlayCanvas();
+    }
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (!points || Object.keys(points).length === 0) return;
+
+    const t = getRemoteCoverTransform(video, canvas);
+    const toPt = (name) => {
+        const p = points[name];
+        if (!p) return null;
+        return [t.offsetX + p[0] * t.drawW, t.offsetY + p[1] * t.drawH];
+    };
+
+    // Same joint/connection set + same colors as patient.html's own
+    // drawFilteredSkeleton(), so what the doctor sees matches what the
+    // patient sees on their own screen — same joints, same look.
+    const conns = getActiveConnections(exerciseType);
+    const activePoints = new Set();
+    conns.forEach(([a, b]) => { activePoints.add(a); activePoints.add(b); });
+
+    ctx.strokeStyle = '#91e494';
+    ctx.lineWidth = 3;
+    conns.forEach(([a, b]) => {
+        const pa = toPt(a), pb = toPt(b);
+        if (pa && pb) {
+            ctx.beginPath();
+            ctx.moveTo(pa[0], pa[1]);
+            ctx.lineTo(pb[0], pb[1]);
+            ctx.stroke();
+        }
+    });
+
+    ctx.fillStyle = '#1D8A6D';
+    activePoints.forEach((name) => {
+        const p = toPt(name);
+        if (p) {
+            ctx.beginPath();
+            ctx.arc(p[0], p[1], 4, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    });
+}
+
+window.addEventListener('resize', () => { if (isRemoteMode) resizeRemoteOverlayCanvas(); });
+
+// Switch the SAME camera-container screen between local webcam & remote
+// patient video, so badges / timer ring / joint-angles / analytics are
+// reused as-is for both modes 
+function enterRemoteVideoMode() {
+    isRemoteMode = true;
+    document.getElementById('cameraPlaceholder').style.display   = 'none';
+    document.getElementById('remotePatientVideo').style.display   = 'block';
+    document.getElementById('remoteOverlayCanvas').style.display  = 'block';
+    document.getElementById('remoteDoctorPip').style.display      = 'block';
+    document.getElementById('remoteNoPatient').style.display      = 'flex';
+    document.getElementById('poseBadges').style.display           = 'flex';
+    document.getElementById('cameraStatusText').textContent       = 'Remote';
+    document.getElementById('cameraStatus').classList.add('active');
+    applyActiveJointUI();
+
+    // Keep the overlay canvas pixel-sized to match the video element, and
+    // re-sync whenever the actual video track's real dimensions arrive.
+    resizeRemoteOverlayCanvas();
+    document.getElementById('remotePatientVideo').addEventListener('loadedmetadata', resizeRemoteOverlayCanvas);
+}
+
+function exitRemoteVideoMode() {
+    isRemoteMode = false;
+    const video = document.getElementById('remotePatientVideo');
+    video.srcObject = null;
+    video.style.display = 'none';
+    document.getElementById('remoteOverlayCanvas').style.display = 'none';
+    const overlayCtx = document.getElementById('remoteOverlayCanvas').getContext('2d');
+    overlayCtx.clearRect(0, 0, overlayCtx.canvas.width, overlayCtx.canvas.height);
+    document.getElementById('remoteDoctorPip').style.display   = 'none';
+    document.getElementById('remoteNoPatient').style.display   = 'none';
+    document.getElementById('poseBadges').style.display        = 'none';
+    document.getElementById('cameraPlaceholder').style.display = 'flex';
+    document.getElementById('cameraStatusText').textContent    = 'Disconnected';
+    document.getElementById('cameraStatus').classList.remove('active');
+    document.getElementById('statusText').textContent          = 'Ready';
+    document.getElementById('statusDot').className             = 'badge-dot offline';
+}
+
+// ── Render the "Remote Sessions" list (below the main session UI) ─────────
+function renderRemoteSessionsList() {
+    const wrap = document.getElementById('remoteSessionsList');
+    if (!wrap) return;
+    if (!remoteSessionsList.length) {
+        wrap.innerHTML = '<div class="session-list-empty">No remote rooms yet — create one above.</div>';
+        return;
+    }
+    wrap.innerHTML = remoteSessionsList.slice().reverse().map(item => {
+        const sched = new Date(item.scheduledAt).toLocaleString([], {dateStyle:'medium', timeStyle:'short'});
+        let statusHtml, actionHtml;
+        if (item.status === 'live') {
+            statusHtml = `<span class="status-pill live"><span class="dot"></span> Live</span>`;
+            actionHtml = `<button class="btn-danger btn-sm" onclick="endRemoteSession()"><i class="fas fa-phone-slash"></i> End</button>`;
+        } else if (item.status === 'joining') {
+            statusHtml = `<span class="status-pill live"><span class="dot"></span> Waiting for patient</span>`;
+            actionHtml = `<button class="btn-danger btn-sm" onclick="endRemoteSession()"><i class="fas fa-phone-slash"></i> End</button>`;
+        } else {
+            statusHtml = `<span class="status-pill created">Room Ready</span>`;
+            actionHtml = `<button class="btn-primary btn-sm" onclick="joinRemoteRoom('${item.roomId}')"><i class="fas fa-right-to-bracket"></i> Join Room</button>`;
+        }
+        return `
+        <div class="session-list-item">
+            <div class="info">
+                <div class="name">${item.patientName || 'Patient'}</div>
+                <div class="meta">${sched}</div>
+            </div>
+            ${statusHtml}
+            ${actionHtml}
+        </div>`;
+    }).join('');
+}
+
+// Doctor clicks "Join Room" in the list — this is the ONLY place the
+// doctor's camera/mic get requested for a remote session; generating the
+// link earlier does not touch the camera at all.
+async function joinRemoteRoom(roomId) {
+    const item = remoteSessionsList.find(r => r.roomId === roomId);
+    if (!item) { showToast('Room not found', 'error'); return; }
+
+    remoteRoomId = item.roomId;
+    remoteToken  = item.token;
+
+    // Keep the main patient dropdown (used by startSession/saveSession) in
+    // sync with the patient this room belongs to.
+    const mainSelect = document.getElementById('sessionPatientSelect');
+    if (mainSelect && item.patientId) mainSelect.value = item.patientId;
+
+    item.status = 'joining';
+    saveList(REMOTE_LIST_KEY, remoteSessionsList);
+    renderRemoteSessionsList();
+
+    closeRemoteModal();
+
+    // Same screen (camera-container) now shows the remote patient instead
+    // of the local webcam, and only now does the doctor's own camera/mic
+    // get requested (inside connectDoctorSignaling -> getRemoteLocalMedia).
+    enterRemoteVideoMode();
+    await connectDoctorSignaling();
+    showToast('Joined room — waiting for patient...', 'success');
+}
+
+//  Modal open/close
+// Format a Date as the value a <input type="datetime-local"> expects,
+// in the browser's LOCAL time (no timezone conversion) — matches what the
+// backend expects too, since it parses scheduled_at with a naive
+// datetime.fromisoformat() (see telehealth.py).
+function toDatetimeLocalValue(date) {
+    const pad = n => String(n).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+async function openRemoteModal() {
+    document.getElementById('remoteModal').classList.add('active');
+    if (!remoteRoomId) {
+        // fresh open — populate patient dropdown
+        const sel = document.getElementById('remotePatientSelect');
+        sel.innerHTML = '<option value="">Select Patient</option>';
+        try {
+            const pts = await (await fetch('/api/patients')).json();
+            pts.forEach(p => {
+                const o = document.createElement('option');
+                o.value = p.id; o.textContent = p.name;
+                sel.appendChild(o);
+            });
+            // default to whichever patient is already selected on the main page
+            const mainSelect = document.getElementById('sessionPatientSelect');
+            if (mainSelect?.value) sel.value = mainSelect.value;
+        } catch (e) { console.error('remote: loadPatients failed', e); }
+
+        // Default "When" to right now — doctor generating the link and
+        // starting immediately is still the common case; they can push it
+        // out to a later time instead.
+        document.getElementById('remoteScheduledAt').value = toDatetimeLocalValue(new Date());
+    }
+}
+
+function closeRemoteModal() {
+    document.getElementById('remoteModal').classList.remove('active');
+    // Note: closing the modal does NOT end the call — doctor can reopen it
+    // via the "Remote Session" button to get back to the live view.
+}
+
+// Step 1: generate the link 
+async function generateRemoteLink() {
+    const patientId = document.getElementById('remotePatientSelect').value;
+    if (!patientId) { showToast('Please select a patient', 'error'); return; }
+
+    const scheduledRaw = document.getElementById('remoteScheduledAt').value;
+    if (!scheduledRaw) { showToast('Please pick a date & time', 'error'); return; }
+
+    const btn = document.getElementById('remoteGenerateBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating...';
+
+    try {
+        const res = await fetch('/api/telehealth/create-room', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                patient_id:    patientId,
+                exercise_type: document.getElementById('exerciseType')?.value || null,
+                mode:          'remote',
+                scheduled_at:  scheduledRaw,
+            }),
+        });
+        if (!res.ok) {
+            const msg = (await res.json().catch(()=>({}))).detail || 'create-room failed';
+            throw new Error(msg);
+        }
+        const data = await res.json();
+
+        // NOTE: we deliberately do NOT set remoteRoomId/remoteToken here and
+        // do NOT enter video mode or turn the doctor's camera on. The room
+        // is just created at this point — the doctor's camera/mic only turn
+        // on once they click "Join Room" in the Remote Sessions list below
+        // (see joinRemoteRoom()).
+
+        // Keep the main patient dropdown (used by startSession/saveSession)
+        // in sync with the patient this remote link was generated for.
+        const mainSelect = document.getElementById('sessionPatientSelect');
+        if (mainSelect) mainSelect.value = patientId;
+
+        const fullLink = `${window.location.origin}${data.join_url}`;
+        document.getElementById('remoteLinkInput').value = fullLink;
+        document.getElementById('remoteLinkBox').style.display = 'block';
+
+        const sched  = new Date(data.scheduled_at);
+        const expiry = new Date(data.expires_at);
+        document.getElementById('remoteScheduleSummary').innerHTML =
+            `<span>Scheduled: <b>${sched.toLocaleString([], {dateStyle:'medium', timeStyle:'short'})}</b></span>
+             <span>Link expires: <b>${expiry.toLocaleString([], {dateStyle:'medium', timeStyle:'short'})}</b></span>`;
+        document.getElementById('remoteScheduleSummary').classList.add('show');
+
+        btn.innerHTML = '<i class="fas fa-redo"></i> Regenerate Link';
+        btn.disabled = false;
+
+        // Add this room to the "Remote Sessions" list below — doctor joins
+        // (and their camera turns on) from there, not automatically here.
+        const patientName = document.querySelector('#remotePatientSelect option:checked')?.textContent || 'Patient';
+        remoteSessionsList.push({
+            roomId:      data.room_id,
+            token:       data.token,
+            patientId:   patientId,
+            patientName: patientName,
+            scheduledAt: data.scheduled_at,
+            expiresAt:   data.expires_at,
+            joinUrl:     fullLink,
+            status:      'created',   // created -> joining -> live
+        });
+        saveList(REMOTE_LIST_KEY, remoteSessionsList);
+        renderRemoteSessionsList();
+
+        showToast('Room created — join it from the list below', 'success');
+    } catch (e) {
+        console.error(e);
+        showToast(e.message || 'Could not generate link. Try again.', 'error');
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-link"></i> Generate Link';
+    }
+}
+
+function copyRemoteLink() {
+    const input = document.getElementById('remoteLinkInput');
+    input.select();
+    navigator.clipboard?.writeText(input.value)
+        .then(() => showToast('Link copied!', 'success'))
+        .catch(() => document.execCommand('copy'));
+}
+
+// ── Self Training modal — doctor side ──────────────────────────────────────
+// No live view: generate a scheduled link and hand it off, nothing else to
+// do here until the patient uses it and results show up in Reports.
+async function openSelfTrainingModal() {
+    document.getElementById('selfTrainingModal').classList.add('active');
+    document.getElementById('selfTrainingLinkBox').style.display = 'none';
+    document.getElementById('selfTrainingScheduleSummary').classList.remove('show');
+    document.getElementById('selfTrainingGenerateBtn').disabled = false;
+    document.getElementById('selfTrainingGenerateBtn').innerHTML = '<i class="fas fa-link"></i> Generate Link';
+
+    const sel = document.getElementById('selfTrainingPatientSelect');
+    sel.innerHTML = '<option value="">Select Patient</option>';
+    try {
+        const pts = await (await fetch('/api/patients')).json();
+        pts.forEach(p => {
+            const o = document.createElement('option');
+            o.value = p.id; o.textContent = p.name;
+            sel.appendChild(o);
+        });
+        const mainSelect = document.getElementById('sessionPatientSelect');
+        if (mainSelect?.value) sel.value = mainSelect.value;
+    } catch (e) { console.error('self-training: loadPatients failed', e); }
+
+    // Default "When" to an hour from now — self training is normally
+    // scheduled ahead, not started this second.
+    const inOneHour = new Date(Date.now() + 60 * 60 * 1000);
+    document.getElementById('selfTrainingScheduledAt').value = toDatetimeLocalValue(inOneHour);
+}
+
+function closeSelfTrainingModal() {
+    document.getElementById('selfTrainingModal').classList.remove('active');
+}
+
+async function generateSelfTrainingLink() {
+    const patientId = document.getElementById('selfTrainingPatientSelect').value;
+    if (!patientId) { showToast('Please select a patient', 'error'); return; }
+
+    const scheduledRaw = document.getElementById('selfTrainingScheduledAt').value;
+    if (!scheduledRaw) { showToast('Please pick a date & time', 'error'); return; }
+
+    const btn = document.getElementById('selfTrainingGenerateBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating...';
+
+    try {
+        const res = await fetch('/api/telehealth/create-room', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                patient_id:    patientId,
+                exercise_type: document.getElementById('exerciseType')?.value || null,
+                mode:          'self_training',
+                scheduled_at:  scheduledRaw,
+                target_rom:    parseFloat(document.getElementById('targetRom')?.value) || 90,
+            }),
+        });
+        if (!res.ok) {
+            const msg = (await res.json().catch(()=>({}))).detail || 'create-room failed';
+            throw new Error(msg);
+        }
+        const data = await res.json();
+
+        const fullLink = `${window.location.origin}${data.join_url}`;
+        document.getElementById('selfTrainingLinkInput').value = fullLink;
+        document.getElementById('selfTrainingLinkBox').style.display = 'block';
+
+        const sched  = new Date(data.scheduled_at);
+        const expiry = new Date(data.expires_at);
+        document.getElementById('selfTrainingScheduleSummary').innerHTML =
+            `<span>Scheduled: <b>${sched.toLocaleString([], {dateStyle:'medium', timeStyle:'short'})}</b></span>
+             <span>Link expires: <b>${expiry.toLocaleString([], {dateStyle:'medium', timeStyle:'short'})}</b></span>
+             <span>Patient does this alone — reps/accuracy save straight to their record.</span>`;
+        document.getElementById('selfTrainingScheduleSummary').classList.add('show');
+
+        btn.innerHTML = '<i class="fas fa-redo"></i> Regenerate Link';
+        btn.disabled = false;
+        showToast('Self Training scheduled', 'success');
+
+        // Add this room to the "Self Training Sessions" list below — its
+        // status updates automatically once the patient joins/finishes.
+        const patientName = document.querySelector('#selfTrainingPatientSelect option:checked')?.textContent || 'Patient';
+        selfTrainingSessionsList.push({
+            roomId:      data.room_id,
+            patientId:   patientId,
+            patientName: patientName,
+            scheduledAt: data.scheduled_at,
+            expiresAt:   data.expires_at,
+            status:      'scheduled',   // scheduled -> joined -> completed
+            sessionData: null,
+        });
+        saveList(SELF_LIST_KEY, selfTrainingSessionsList);
+        renderSelfTrainingSessionsList();
+    } catch (e) {
+        console.error(e);
+        showToast(e.message || 'Could not generate link. Try again.', 'error');
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-link"></i> Generate Link';
+    }
+}
+
+function copySelfTrainingLink() {
+    const input = document.getElementById('selfTrainingLinkInput');
+    input.select();
+    navigator.clipboard?.writeText(input.value)
+        .then(() => showToast('Link copied!', 'success'))
+        .catch(() => document.execCommand('copy'));
+}
+
+// ── Render the "Self Training Sessions" list (below the main session UI) ──
+function renderSelfTrainingSessionsList() {
+    const wrap = document.getElementById('selfTrainingSessionsList');
+    if (!wrap) return;
+    if (!selfTrainingSessionsList.length) {
+        wrap.innerHTML = '<div class="session-list-empty">No self training sessions scheduled yet.</div>';
+        return;
+    }
+    wrap.innerHTML = selfTrainingSessionsList.slice().reverse().map(item => {
+        const sched = new Date(item.scheduledAt).toLocaleString([], {dateStyle:'medium', timeStyle:'short'});
+        let statusHtml, actionHtml = '';
+        if (item.status === 'completed') {
+            statusHtml = `<span class="status-pill completed"><i class="fas fa-check"></i> Done</span>`;
+            actionHtml = `<button class="btn-primary btn-sm" onclick="viewSelfTrainingDetails('${item.roomId}')"><i class="fas fa-chart-bar"></i> View Report</button>`;
+        } else if (item.status === 'joined') {
+            statusHtml = `<span class="status-pill live"><span class="dot"></span> Joined</span>`;
+        } else {
+            statusHtml = `<span class="status-pill created">Scheduled</span>`;
+        }
+        return `
+        <div class="session-list-item">
+            <div class="info">
+                <div class="name">${item.patientName || 'Patient'}</div>
+                <div class="meta">${sched}</div>
+            </div>
+            ${statusHtml}
+            ${actionHtml}
+        </div>`;
+    }).join('');
+}
+
+// Polls the backend for whether each pending self-training room has been
+// joined/completed by the patient yet.
+//
+// Backed by GET /api/telehealth/room-status/<room_id> (telehealth.py),
+// which returns { status: 'scheduled'|'joined'|'completed', session: {...} }.
+// "joined" fires the moment the patient's page loads and calls GET /room
+// (patient.html has no other doctor-visible signal for Self Training —
+// there's no live WS like Remote mode has). "completed" comes with the
+// saved metrics inline once the patient POSTs .../self-training/save.
+async function refreshSelfTrainingStatuses() {
+    const pending = selfTrainingSessionsList.filter(s => s.status !== 'completed');
+    if (!pending.length) return;
+
+    let changed = false;
+    for (const item of pending) {
+        try {
+            const res = await fetch(`/api/telehealth/room-status/${item.roomId}`);
+            if (!res.ok) continue;
+            const data = await res.json();
+            if (data.status === 'completed') {
+                item.status = 'completed';
+                item.sessionData = data.session || null;
+                changed = true;
+            } else if (data.status === 'joined' && item.status !== 'joined') {
+                item.status = 'joined';
+                changed = true;
+            }
+        } catch (e) { /* endpoint not available yet — leave status as-is */ }
+    }
+    if (changed) {
+        saveList(SELF_LIST_KEY, selfTrainingSessionsList);
+        renderSelfTrainingSessionsList();
+    }
+}
+
+// Doctor clicks "View Details" — opens the same report popup used for a
+// live session, populated from the patient's saved self-training data.
+// Once viewed, the entry is removed from the list (report is a one-time
+// pop-up here, same as finishing a live session).
+function viewSelfTrainingDetails(roomId) {
+    const idx = selfTrainingSessionsList.findIndex(s => s.roomId === roomId);
+    if (idx === -1) return;
+    const item = selfTrainingSessionsList[idx];
+
+    if (!item.sessionData) {
+        showToast('Report not ready yet for this session', 'error');
+        return;
+    }
+    showResultModalFromData(item.sessionData, item.patientName);
+
+    selfTrainingSessionsList.splice(idx, 1);
+    saveList(SELF_LIST_KEY, selfTrainingSessionsList);
+    renderSelfTrainingSessionsList();
+}
+
+// Same report modal as showResultModal(), but populated from a saved
+// session record (fetched via room-status) instead of the live _timeline —
+// used for Self Training sessions the doctor wasn't watching live.
+function showResultModalFromData(sessionData, patientName) {
+    const timeline = (sessionData.session_data && sessionData.session_data.timeline) || [];
+    const avgAcc  = sessionData.accuracy_percentage ?? 0;
+    const avgRom  = sessionData.average_rom ?? 0;
+    const avgStab = sessionData.stability_score ?? 0;
+    const durSec  = sessionData.duration_seconds ?? 0;
+    const durStr  = `${String(Math.floor(durSec/60)).padStart(2,'0')}:${String(durSec%60).padStart(2,'0')}`;
+
+    document.getElementById('res_duration').textContent = durStr;
+    document.getElementById('res_accuracy').textContent  = `${avgAcc}%`;
+    document.getElementById('res_rom').textContent       = `${avgRom}°`;
+    document.getElementById('res_stability').textContent = `${avgStab}%`;
+    document.getElementById('resultSubtitle').textContent =
+        `${sessionData.exercise_type || 'Self Training'} · ${durStr} · ${patientName || ''}`;
+
+    if (resultChartInst) { resultChartInst.destroy(); resultChartInst = null; }
+
+    const labels = timeline.length
+        ? timeline.map(r => `${Math.floor(r.t/60)}:${String(r.t%60).padStart(2,'0')}`)
+        : ['Start', 'End'];
+    const accData  = timeline.length ? timeline.map(r=>r.acc)  : [0, +avgAcc];
+    const romData  = timeline.length ? timeline.map(r=>r.rom)  : [0, +avgRom];
+    const stabData = timeline.length ? timeline.map(r=>r.stab) : [0, +avgStab];
+
+    const ctx = document.getElementById('resultChart').getContext('2d');
+    resultChartInst = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels,
+            datasets: [
+                { label:'Accuracy %',  data:accData,  borderColor:'#1D8A6D', backgroundColor:'rgba(29,138,109,0.1)',
+                  tension:0.4, fill:true, borderWidth:2, pointRadius:3, pointBackgroundColor:'#1D8A6D' },
+                { label:'ROM °',       data:romData,  borderColor:'#3E6FD9', backgroundColor:'rgba(59,91,165,0.1)',
+                  tension:0.4, fill:true, borderWidth:2, pointRadius:3, pointBackgroundColor:'#3E6FD9' },
+                { label:'Stability %', data:stabData, borderColor:'#8B5FC7', backgroundColor:'rgba(122,92,142,0.1)',
+                  tension:0.4, fill:true, borderWidth:2, pointRadius:3, pointBackgroundColor:'#8B5FC7' },
+            ]
+        },
+        options: {
+            responsive:true, maintainAspectRatio:false,
+            plugins:{
+                legend:{ display:true, position:'top',
+                    labels:{ usePointStyle:true, pointStyle:'circle', padding:16, font:{size:11} }},
+                tooltip:{ backgroundColor:'rgba(255,255,255,0.95)',
+                    titleColor:'#1a2332', bodyColor:'#5a6b7c',
+                    borderColor:'rgba(0,0,0,0.08)', borderWidth:1, cornerRadius:10, padding:10 }
+            },
+            scales:{
+                y:{ beginAtZero:true, max:Math.max(100, Math.ceil(+avgRom/10)*10+10),
+                    grid:{color:'rgba(0,0,0,0.04)'}, ticks:{font:{size:10}} },
+                x:{ grid:{display:false}, ticks:{font:{size:10}, maxRotation:45} }
+            },
+            interaction:{ intersect:false, mode:'index' }
+        }
+    });
+
+    document.getElementById('resultModal').classList.add('active');
+}
+
+// Doctor's own camera/mic (for the two-way call) 
+async function getRemoteLocalMedia() {
+    if (remoteLocalStream) return remoteLocalStream;
+    try {
+        remoteLocalStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        document.getElementById('remoteDoctorVideo').srcObject = remoteLocalStream;
+    } catch (e) {
+        console.warn('remote: doctor camera/mic not available, joining as viewer-only:', e);
+        remoteLocalStream = null;
+    }
+    return remoteLocalStream;
+}
+
+// WebRTC (doctor is always the answerer — patient always offers) 
+async function connectDoctorSignaling() {
+    let iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
+    try {
+        const res = await fetch('/api/telehealth/turn-credentials');
+        if (res.ok) iceServers = (await res.json()).iceServers;
+    } catch (e) { console.warn('TURN fetch failed, using STUN only:', e); }
+
+    remotePeerConn = new RTCPeerConnection({ iceServers });
+
+    const localStream = await getRemoteLocalMedia();
+    if (localStream) localStream.getTracks().forEach(t => remotePeerConn.addTrack(t, localStream));
+
+    remotePeerConn.ontrack = (event) => {
+        document.getElementById('remoteNoPatient').style.display = 'none';
+        document.getElementById('remotePatientVideo').srcObject = event.streams[0];
+        // 'loadedmetadata' sometimes fires late enough that the first few
+        // incoming pose_metrics messages find canvas.width/height still 0
+        // (never resized yet), so drawRemoteSkeleton() draws nothing for a
+        // moment/permanently on some browsers. Resize immediately here too —
+        // clientWidth/Height come from CSS (100% of the container), not the
+        // video's intrinsic size, so this is safe to call even before the
+        // track's real dimensions are known. loadedmetadata still fires
+        // afterward as a backup.
+        resizeRemoteOverlayCanvas();
+
+        // ─── Low-latency receiver tuning ───────────────────────────────
+        // Reduces the jitter buffer the browser holds incoming frames in
+        // before playback, so the video doesn't build up a growing lag
+        // over the course of a long call — trims latency at the cost of
+        // slightly more sensitivity to network jitter, which is the right
+        // tradeoff for a live therapy call where responsiveness matters
+        // more than perfect smoothness during brief network hiccups.
+        //
+        // Both properties are Chromium-only as of most browser versions
+        // (not implemented in Safari/Firefox) — feature-detected via
+        // `'x' in receiver` so this is a no-op (not an error) everywhere
+        // else; the call still plays back normally with default buffering.
+        const receiver = event.receiver;
+        try {
+            if (receiver && 'jitterBufferTarget' in receiver) {
+                receiver.jitterBufferTarget = 0;
+            }
+            if (receiver && 'playoutDelayHint' in receiver) {
+                receiver.playoutDelayHint = 0;
+            }
+        } catch (e) {
+            console.warn('low-latency receiver hints not supported on this browser:', e);
+        }
+    };
+
+    remotePeerConn.onicecandidate = (event) => {
+        if (event.candidate) remoteSendSignal({ type: 'ice_candidate', candidate: event.candidate });
+    };
+
+    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    remoteWs = new WebSocket(`${proto}://${window.location.host}/ws/signal/${remoteRoomId}?role=doctor&token=${encodeURIComponent(remoteToken)}`);
+
+    remoteWs.onmessage = async (event) => {
+        const msg = JSON.parse(event.data);
+        switch (msg.type) {
+            case 'peer_already_present':
+            case 'peer_joined':
+                if (msg.role === 'patient') onPatientConnected();
+                break;
+            case 'offer':
+                await remotePeerConn.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+                const answer = await remotePeerConn.createAnswer();
+                await remotePeerConn.setLocalDescription(answer);
+                remoteSendSignal({ type: 'answer', sdp: answer });
+                break;
+            case 'ice_candidate':
+                try { await remotePeerConn.addIceCandidate(msg.candidate); } catch (e) { console.warn(e); }
+                break;
+            case 'pose_data': {
+                // Single source of truth fix: this is the SERVER-side
+                // broadcast (telehealth.py room_mgr.process_and_broadcast ->
+                // services/camera_ws.py CameraManager.process_frame), the
+                // exact same calculation that ends up in the saved
+                // SessionModel row and the results webhook payload
+                // (services/webhook.py build_session_result_payload).
+                //
+                // Previously the doctor's live view was fed by a SEPARATE
+                // 'pose_metrics' message the patient's browser computed
+                // client-side in JS and relayed over the socket — a second,
+                // independent calculation that could drift from what
+                // actually gets persisted/sent (different rounding, timing,
+                // or a client-side bug never touching the saved record).
+                // Now both the doctor's live numbers and the final saved/
+                // webhooked numbers come from the same CameraManager
+                // instance for this room — no second pipeline to diverge.
+                //
+                // pose_data's landmark keys already use the same naming
+                // (left_shoulder, right_shoulder, ...) as this page's own
+                // getActiveConnections()/drawRemoteSkeleton() — see
+                // config.KEY_LANDMARKS / HAND_LANDMARKS — so no renaming is
+                // needed, only pulling the metric fields out of the mix and
+                // converting each landmark's {x,y,z,v} into the [x,y] pair
+                // drawRemoteSkeleton() expects.
+                const pd = msg.pose_data || {};
+                const METRIC_KEYS = new Set([
+                    'angles', 'reps', 'primary_angle', 'affected_side',
+                    'stability', 'smoothness', 'balance', 'fatigue', 'accuracy',
+                    'stability_score', 'movement_smoothness', 'balance_score',
+                    'fatigue_estimation', 'accuracy_percentage',
+                ]);
+                const points = {};
+                Object.keys(pd).forEach((name) => {
+                    if (METRIC_KEYS.has(name)) return;
+                    const p = pd[name];
+                    if (p && p.x != null && p.y != null) points[name] = [p.x, p.y];
+                });
+
+                handlePoseData({
+                    detected:      Object.keys(points).length > 0,
+                    angles:        pd.angles || {},
+                    reps:          pd.reps,
+                    stability:     pd.stability,
+                    smoothness:    pd.smoothness,
+                    balance:       pd.balance,
+                    fatigue:       pd.fatigue,
+                    primary_angle: pd.primary_angle,
+                });
+
+                // pose_data itself doesn't carry exercise_type (server
+                // doesn't echo it back) — use the doctor's own selected
+                // exercise, the same element create-room already reads.
+                const exerciseType = document.getElementById('exerciseType')?.value || '';
+                drawRemoteSkeleton(points, exerciseType);
+                break;
+            }
+            case 'peer_left':
+                if (msg.role === 'patient') onPatientDisconnected();
+                break;
+            case 'patient_leaving':
+                // Item 1: patient picked a reason on their stop-reason sheet
+                // right before leaving (pain / stopped_by_patient /
+                // technical_error / completed) — surface it here so the
+                // doctor knows WHY, not just that the peer_left event fired
+                // a moment later. The server also stashes this same reason
+                // (telehealth.py room_mgr.pending_end_reason) and writes it
+                // as the saved session's end_reason once the disconnect
+                // handler persists the session (item 5) — this toast is
+                // just the live, human-readable version of that.
+                onPatientLeavingReason(msg.reason);
+                break;
+            case 'kicked':
+                // Item 3: this doctor opened the SAME room in another tab/
+                // device — server is closing this socket right after this
+                // message (code 4010). Flagged so onclose below can show a
+                // clear message instead of looking like a normal drop.
+                _remoteKickedByOtherDevice = true;
+                break;
+        }
+    };
+
+    remoteWs.onclose = (event) => {
+        // Item 3: previously there was no onclose handler here at all — a
+        // doctor opening the same remote room in a second tab/device just
+        // silently orphaned the first tab's socket with no explanation.
+        if (event.code === 4010 || _remoteKickedByOtherDevice) {
+            _remoteKickedByOtherDevice = false;
+            showToast('This room was opened in another tab/device — disconnected here.', 'error', 6000);
+            document.getElementById('statusText').textContent = 'Disconnected (opened elsewhere)';
+            document.getElementById('statusDot').className    = 'badge-dot error';
+        }
+    };
+}
+
+function remoteSendSignal(data) {
+    if (remoteWs && remoteWs.readyState === WebSocket.OPEN) remoteWs.send(JSON.stringify(data));
+}
+
+function onPatientConnected() {
+    remotePatientConnected = true;
+    document.getElementById('remoteSetupView').style.display = 'none';
+    document.getElementById('remoteLiveView').style.display  = 'block';
+    document.getElementById('remoteLiveSub').textContent     = 'Patient connected — session is live';
+    document.getElementById('remoteStatusDot')?.classList.add('live');
+    document.getElementById('statusText').textContent        = 'Connected';
+    document.getElementById('statusDot').className           = 'badge-dot online';
+    document.getElementById('cameraStatusText').textContent  = 'Live';
+    syncRemoteExerciseConfig();   // tell patient which exercise/ROM to use for their rep counting
+    showToast('Patient joined the session!', 'success');
+
+    const item = remoteSessionsList.find(r => r.roomId === remoteRoomId);
+    if (item) { item.status = 'live'; saveList(REMOTE_LIST_KEY, remoteSessionsList); renderRemoteSessionsList(); }
+}
+
+function onPatientDisconnected() {
+    remotePatientConnected = false;
+    document.getElementById('remoteNoPatient').style.display = 'flex';
+    document.getElementById('remoteLiveSub').textContent = 'Patient disconnected — waiting to reconnect...';
+    document.getElementById('remotePatientVideo').srcObject = null;
+    document.getElementById('statusText').textContent = 'Reconnecting...';
+    document.getElementById('statusDot').className    = 'badge-dot error';
+
+    const item = remoteSessionsList.find(r => r.roomId === remoteRoomId);
+    if (item) { item.status = 'joining'; saveList(REMOTE_LIST_KEY, remoteSessionsList); renderRemoteSessionsList(); }
+}
+
+// Item 1: the 'patient_leaving' signal fires an instant before 'peer_left',
+// carrying the reason the patient picked on their stop-reason sheet. Same
+// 4 patient-facing values as Self Training (models.VALID_END_REASONS).
+function onPatientLeavingReason(reason) {
+    const labels = {
+        pain:               ['Patient stopped — reported pain', 'error'],
+        stopped_by_patient: ['Patient left — too tired to continue', 'error'],
+        technical_error:    ['Patient left — technical issue', 'error'],
+        completed:          ['Patient finished their reps and left', 'success'],
+    };
+    const [message, type] = labels[reason] || ['Patient left the session', 'error'];
+    showToast(message, type, 5000);
+}
+
+// ─── Push exercise/ROM config to the patient over the signaling channel so
+// their on-device rep counting uses the doctor's current selection ────────
+function syncRemoteExerciseConfig() {
+    remoteSendSignal({
+        type: 'session_config',
+        exercise_type: document.getElementById('exerciseType')?.value || null,
+        target_rom:    parseFloat(document.getElementById('targetRom')?.value) || 90,
+    });
+}
+
+// Controls
+function toggleRemoteMic() {
+    if (!remoteLocalStream) return;
+    remoteMicOn = !remoteMicOn;
+    remoteLocalStream.getAudioTracks().forEach(t => t.enabled = remoteMicOn);
+    document.getElementById('remoteMicBtn').innerHTML =
+        `<i class="fas fa-microphone${remoteMicOn ? '' : '-slash'}"></i> ${remoteMicOn ? 'Mute' : 'Unmute'}`;
+}
+
+function toggleRemoteCam() {
+    if (!remoteLocalStream) return;
+    remoteCamOn = !remoteCamOn;
+    remoteLocalStream.getVideoTracks().forEach(t => t.enabled = remoteCamOn);
+    document.getElementById('remoteCamBtn').innerHTML =
+        `<i class="fas fa-video${remoteCamOn ? '' : '-slash'}"></i> Camera`;
+}
+
+// End session
+// skipConfirm=true is used when this is triggered automatically (e.g. the
+// exercise timer running out) rather than the doctor clicking the button —
+// no need to pop a confirm() dialog in that case.
+async function endRemoteSession(skipConfirm = false) {
+    if (!skipConfirm && !confirm('End this remote session? The patient\'s link will stop working.')) return;
+
+    // If an exercise session is mid-flight, stop it first so it gets saved
+    // (same as a local session getting cut short). Guarded against
+    // re-entering stopSession() when *it* is the one calling us.
+    if (sessionActive) stopSession();
+
+    if (remoteRoomId) {
+        try { await fetch(`/api/telehealth/close-room/${remoteRoomId}`, { method: 'POST' }); }
+        catch (e) { console.error('close-room failed:', e); }
+
+        // Room is over — drop it from the "Remote Sessions" list.
+        remoteSessionsList = remoteSessionsList.filter(r => r.roomId !== remoteRoomId);
+        saveList(REMOTE_LIST_KEY, remoteSessionsList);
+        renderRemoteSessionsList();
+    }
+
+    if (remoteLocalStream) remoteLocalStream.getTracks().forEach(t => t.stop());
+    if (remotePeerConn) remotePeerConn.close();
+    if (remoteWs) remoteWs.close();
+
+    remoteRoomId = remoteToken = remoteWs = remotePeerConn = remoteLocalStream = null;
+    remotePatientConnected = false;
+
+    // Hand the shared camera screen back to local-camera mode
+    exitRemoteVideoMode();
+
+    // Reset modal back to setup view for next time
+    document.getElementById('remoteSetupView').style.display = 'block';
+    document.getElementById('remoteLiveView').style.display  = 'none';
+    document.getElementById('remoteLinkBox').style.display   = 'none';
+    document.getElementById('remoteLinkInput').value         = '';
+    document.getElementById('remoteStatusDot')?.classList.remove('live');
+    document.getElementById('remoteGenerateBtn').innerHTML    = '<i class="fas fa-link"></i> Generate Link';
+
+    closeRemoteModal();
+    showToast('Remote session ended', 'success');
+}
+
+window.addEventListener('beforeunload', () => {
+    if (remoteLocalStream) remoteLocalStream.getTracks().forEach(t => t.stop());
+    if (remotePeerConn) remotePeerConn.close();
+});
+</script>
+</body>
+</html>
