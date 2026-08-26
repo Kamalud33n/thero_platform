@@ -10,6 +10,7 @@ from database import get_db
 from models import SessionModel
 from services.camera_ws import ws_mgr
 from services.webhook import build_session_result_payload, send_session_result_webhook
+from services.timeutils import utcnow, utcnow_iso
 from services.helpers import (
     client_message_version,
     check_client_protocol_version,
@@ -178,7 +179,7 @@ async def _abandon_if_unfinished(session_id: str, camera) -> None:
 
         m = camera.metrics
         reps = m.get_rep_count()
-        sess.end_time            = datetime.datetime.now()
+        sess.end_time            = utcnow()
         if sess.start_time:
             sess.duration_seconds = int((sess.end_time - sess.start_time).total_seconds())
         sess.total_reps          = reps
@@ -347,7 +348,7 @@ async def ws_pose(websocket: WebSocket):
                 "type":      "pose_data",
                 "frame":     base64.b64encode(buf).decode(),
                 "pose_data": pose_data,
-                "ts":        datetime.datetime.now().isoformat(),
+                "ts":        utcnow_iso(),
             })
 
             # Real backpressure signal (item: "frame rate limiting is just

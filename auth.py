@@ -67,6 +67,8 @@ from dataclasses import dataclass
 import jwt
 from fastapi import Header, HTTPException
 
+from services.timeutils import utcnow
+
 JWT_ALGORITHM = os.getenv("MEDNOVA_JWT_ALGORITHM", "HS256")
 JWT_SECRET = os.getenv("MEDNOVA_JWT_SECRET")
 JWT_PUBLIC_KEY = os.getenv("MEDNOVA_JWT_PUBLIC_KEY")
@@ -360,7 +362,7 @@ def consume_patient_session_jti(db, claims: PatientSessionClaims) -> None:
     db.add(UsedPatientToken(
         jti=claims.jti,
         session_id=claims.session_id,
-        expires_at=datetime.datetime.now() + datetime.timedelta(seconds=PATIENT_TOKEN_TTL_SECONDS),
+        expires_at=utcnow() + datetime.timedelta(seconds=PATIENT_TOKEN_TTL_SECONDS),
     ))
 
 

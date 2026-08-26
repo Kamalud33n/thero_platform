@@ -23,6 +23,10 @@ services:
   db:
     image: mysql:8.0
     restart: unless-stopped
+    # Pin the server's own clock to UTC so func.now()/NOW() defaults
+    # (used by several DateTime columns in models.py) match the UTC
+    # timestamps the app writes itself — see services/timeutils.py.
+    command: --default-time-zone=+00:00
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change-me}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-rehab_db_v2}

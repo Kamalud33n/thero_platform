@@ -15,6 +15,7 @@ from models import Patient, TelehealthRoom, SessionModel, JointAngle, ExerciseRe
 from repositories.patient_repo import get_owned_patient
 from repositories.room_repo import get_owned_room
 from services.camera_ws import CameraManager
+from services.timeutils import utcnow, utcnow_iso
 from services.helpers import (
     derive_session_summary_stats,
     stamp as _stamp,
@@ -47,7 +48,7 @@ THERO_PUBLIC_BASE_URL = os.getenv("THERO_PUBLIC_BASE_URL", "").rstrip("/")
 
 
 def _room_expired(room: TelehealthRoom) -> bool:
-    return datetime.datetime.now() > room.expires_at
+    return utcnow() > room.expires_at
 
 #In-memory room registry — doctor + patient pose-tracking "live room".
 # Repurposed for the MedNova integration: this used to relay raw WebRTC
@@ -174,7 +175,7 @@ class RoomManager:
             "type":      "pose_data",
             "frame":     base64.b64encode(buf).decode(),
             "pose_data": pose_data,
-            "ts":        datetime.datetime.now().isoformat(),
+            "ts":        utcnow_iso(),
         })
 
 
@@ -355,7 +356,7 @@ async def get_room(room_id: str, token: str):
         # stuck on "Scheduled" until the session is already finished.
         if room.mode == "self_training" and room.status == "pending":
             room.status = "live"
-            room.started_at = datetime.datetime.now()
+            room.started_at = utcnow()
             db.commit()
             db.refresh(room)
 
@@ -459,7 +460,7 @@ async def _finalize_remote_session(db, room: TelehealthRoom, default_end_reason:
     status = "abandoned" if end_reason == "disconnected" else "completed"
 
     started = room.started_at or room.created_at
-    ended   = datetime.datetime.now()
+    ended   = utcnow()
 
     sess = SessionModel(
         patient_id           = room.patient_id,
@@ -510,7 +511,7 @@ async def close_room(
         room = get_owned_room(db, room_id, therapist)
         webhook_payload = await _finalize_remote_session(db, room, default_end_reason="stopped_by_therapist")
         room.status    = "closed"
-        room.closed_at = datetime.datetime.now()
+        room.closed_at = utcnow()
         db.commit()
 
     if webhook_payload:
@@ -568,7 +569,7 @@ async def ws_signal(websocket: WebSocket, room_id: str, role: str, token: str):
         # First patient connection flips the room live and stamps started_at
         if role == "patient" and room.status == "pending":
             room.status = "live"
-            room.started_at = datetime.datetime.now()
+            room.started_at = utcnow()
             db.commit()
 
     # If the other side is already in the room, tell the socket that just
@@ -684,7 +685,7 @@ async def ws_signal(websocket: WebSocket, room_id: str, role: str, token: str):
                 # still connected) — see _finalize_remote_session.
                 webhook_payload = await _finalize_remote_session(db, r, default_end_reason="disconnected")
                 r.status = "closed"
-                r.closed_at = datetime.datetime.now()
+                r.closed_at = utcnow()
                 db.commit()
 
         if webhook_payload:
@@ -751,7 +752,7 @@ async def ws_self_training(websocket: WebSocket, room_id: str, token: str):
             return
         if room.status == "pending":
             room.status = "live"
-            room.started_at = datetime.datetime.now()
+            room.started_at = utcnow()
             db.commit()
 
     await websocket.accept()
@@ -807,7 +808,7 @@ async def ws_self_training(websocket: WebSocket, room_id: str, token: str):
                 "type":      "pose_data",
                 "frame":     base64.b64encode(buf).decode(),
                 "pose_data": pose_data,
-                "ts":        datetime.datetime.now().isoformat(),
+                "ts":        utcnow_iso(),
             }))
     except WebSocketDisconnect:
         pass
@@ -864,7 +865,7 @@ async def save_self_training_session(room_id: str, token: str, payload: Dict[str
             exercise_type       = payload.get("exercise_type") or room.exercise_type or "General Exercise",
             affected_side       = payload.get("affected_side") or room.affected_side or "both",
             start_time          = _dt("start_time") or room.started_at or room.created_at,
-            end_time            = _dt("end_time") or datetime.datetime.now(),
+            end_time            = _dt("end_time") or utcnow(),
             duration_seconds    = payload.get("duration_seconds", 0),
             total_reps          = total_reps,
             completed_reps      = completed_reps,
@@ -915,7 +916,7 @@ async def save_self_training_session(room_id: str, token: str, payload: Dict[str
 
         room.session_id = sess.id
         room.status      = "closed"
-        room.closed_at   = datetime.datetime.now()
+        room.closed_at   = utcnow()
         db.add(History(
             patient_id = room.patient_id,
             action     = "Self Training Session Completed",

@@ -14,6 +14,7 @@ from auth import ALLOWED_ORIGINS
 from config import pose as _pose  # for /api/health mediapipe_ready flag
 from services.camera_ws import ws_mgr, CameraManager
 from services import mjpeg_camera
+from services.timeutils import utcnow, utcnow_iso
 
 from routers import sessions, camera, ws, reports, analytics, patients, pages
 
@@ -98,7 +99,7 @@ async def seed():
                 sess = SessionModel(
                     patient_id          = p.id,
                     exercise_type       = random.choice(exercises),
-                    start_time          = datetime.datetime.now() - datetime.timedelta(days=random.randint(1, 30)),
+                    start_time          = utcnow() - datetime.timedelta(days=random.randint(1, 30)),
                     duration_seconds    = random.randint(180, 600),
                     total_reps          = random.randint(10, 20),
                     completed_reps      = random.randint(5, 18),
@@ -149,7 +150,7 @@ async def health():
     # many of those are live right now.
     return {
         "status":             "healthy",
-        "timestamp":          datetime.datetime.now().isoformat(),
+        "timestamp":          utcnow_iso(),
         "ws_sessions_active": len(ws_mgr.rooms),
         "mjpeg_running":      mjpeg_camera.is_active(),
         "ws_connections":     len(ws_mgr.connections),

@@ -27,6 +27,7 @@ from config import pose, mp_drawing, KEY_LANDMARKS, get_angle, LOCAL_CAMERA_ENAB
 from config import hands as _hands, HAND_CONNECTIONS as _HAND_CONNECTIONS
 from services import metrics
 from services.exercise_defs import is_hand_exercise as _is_hand_exercise, resolve_exercise_code
+from services.timeutils import utcnow_iso
 
 # Bright, high-visibility drawing specs (default MediaPipe style is dim on a
 # 320x240 frame) — used only as a fallback; primary drawing is done manually
@@ -370,7 +371,7 @@ def gen_frames():
 
                 latest_pose_data["detected"]      = detected
                 latest_pose_data["angles"]        = angles
-                latest_pose_data["ts"]            = datetime.datetime.now().isoformat()
+                latest_pose_data["ts"]            = utcnow_iso()
                 latest_pose_data["reps"]          = reps
                 latest_pose_data["stability"]     = stability
                 latest_pose_data["smoothness"]    = smoothness
@@ -467,7 +468,7 @@ def gen_frames():
 
             latest_pose_data["detected"]      = detected
             latest_pose_data["angles"]        = angles
-            latest_pose_data["ts"]            = datetime.datetime.now().isoformat()
+            latest_pose_data["ts"]            = utcnow_iso()
             latest_pose_data["reps"]          = reps
             latest_pose_data["stability"]     = stability
             latest_pose_data["smoothness"]    = smoothness

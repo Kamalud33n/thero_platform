@@ -15,6 +15,7 @@ from database import get_db
 from models import SessionModel, JointAngle, ExerciseResult, History, VALID_END_REASONS
 from repositories.patient_repo import assert_owns_patient
 from services.webhook import build_session_result_payload, send_session_result_webhook
+from services.timeutils import utcnow
 
 router = APIRouter()
 
@@ -47,7 +48,7 @@ async def start_session(
             patient_id    = pid,
             exercise_type = payload.get("exercise_type", "General Exercise"),
             affected_side = payload.get("affected_side", "both"),
-            start_time    = datetime.datetime.now(),
+            start_time    = utcnow(),
             status        = "in_progress",
         )
         db.add(sess)
@@ -286,7 +287,7 @@ async def save_session(
         if sess is not None:
             sess.exercise_type       = payload.get("exercise_type", sess.exercise_type)
             sess.affected_side       = payload.get("affected_side", sess.affected_side)
-            sess.end_time            = _dt("end_time") or datetime.datetime.now()
+            sess.end_time            = _dt("end_time") or utcnow()
             sess.duration_seconds    = payload.get("duration_seconds", 0)
             sess.total_reps          = total_reps
             sess.completed_reps      = completed_reps
@@ -306,7 +307,7 @@ async def save_session(
                 patient_id          = pid,
                 exercise_type       = payload.get("exercise_type", "General Exercise"),
                 affected_side       = payload.get("affected_side", "both"),
-                start_time          = _dt("start_time") or datetime.datetime.now(),
+                start_time          = _dt("start_time") or utcnow(),
                 end_time            = _dt("end_time"),
                 duration_seconds    = payload.get("duration_seconds", 0),
                 total_reps          = total_reps,
