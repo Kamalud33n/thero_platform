@@ -1659,12 +1659,21 @@ function renderRemoteSessionsList() {
     wrap.innerHTML = remoteSessionsList.slice().reverse().map(item => {
         const sched = new Date(item.scheduledAt).toLocaleString([], {dateStyle:'medium', timeStyle:'short'});
         let statusHtml, actionHtml;
-        if (item.status === 'live') {
-            statusHtml = `<span class="status-pill live"><span class="dot"></span> Live</span>`;
-            actionHtml = `<button class="btn-danger btn-sm" onclick="endRemoteSession()"><i class="fas fa-phone-slash"></i> End</button>`;
-        } else if (item.status === 'joining') {
-            statusHtml = `<span class="status-pill live"><span class="dot"></span> Waiting for patient</span>`;
-            actionHtml = `<button class="btn-danger btn-sm" onclick="endRemoteSession()"><i class="fas fa-phone-slash"></i> End</button>`;
+        if (item.status === 'live' || item.status === 'joining') {
+            // Backend now gives a doctor-disconnect grace window (see
+            // DOCTOR_RECONNECT_GRACE_SECONDS in telehealth.py) instead of
+            // killing the room the instant this tab's socket drops — so
+            // even for a 'live'/'joining' room, this browser may no
+            // longer actually be connected (reload, crash, Zoom camera
+            // conflict, etc.). Always offer "Rejoin" alongside "End" so
+            // the doctor can get back into the SAME session rather than
+            // being stuck with only the option to kill it.
+            statusHtml = item.status === 'live'
+                ? `<span class="status-pill live"><span class="dot"></span> Live</span>`
+                : `<span class="status-pill live"><span class="dot"></span> Waiting for patient</span>`;
+            actionHtml = `
+                <button class="btn-primary btn-sm" onclick="joinRemoteRoom('${item.roomId}')"><i class="fas fa-arrow-rotate-right"></i> Rejoin</button>
+                <button class="btn-danger btn-sm" onclick="endRemoteSession()"><i class="fas fa-phone-slash"></i> End</button>`;
         } else {
             statusHtml = `<span class="status-pill created">Room Ready</span>`;
             actionHtml = `<button class="btn-primary btn-sm" onclick="joinRemoteRoom('${item.roomId}')"><i class="fas fa-right-to-bracket"></i> Join Room</button>`;

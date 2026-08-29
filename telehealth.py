@@ -37,6 +37,22 @@ router = APIRouter()
 ROOM_LINK_VALID_HOURS = 2
 VALID_MODES = ("remote", "self_training")
 
+# How long a Remote room stays alive after the DOCTOR's socket drops
+# (browser closed by mistake, black screen from a Zoom camera conflict,
+# tab reload, network blip, etc.) before we give up and finalize/close
+# it for real. The patient side (templates/patient.html, 'peer_left'
+# handler) already just shows "Waiting for doctor to join..." and keeps
+# running/streaming during this window — it does NOT end the call on its
+# own. This grace period is what lets the doctor reopen the room (via
+# "Join Room" again in the Remote Sessions list) and resume the SAME
+# live session, instead of every doctor-side hiccup permanently killing
+# the room and losing whatever the patient was mid-exercise on.
+# A PATIENT disconnect is treated differently (still ends the room
+# immediately, below) since patient.html has no reconnect flow at all —
+# unlike the doctor, an unreported patient drop really does mean nobody's
+# there to keep exercising.
+DOCTOR_RECONNECT_GRACE_SECONDS = 180
+
 # Needed to turn the relative join_url ("/join/{room_id}?token=...") into
 # an absolute link before it's sent to Laravel in the session-scheduled
 # webhook (services/webhook.send_session_scheduled_webhook) — a relative
@@ -73,9 +89,26 @@ class RoomManager:
         # can use the patient's own reason instead of falling back to a
         # generic "disconnected" — popped the moment it's consumed.
         self.pending_end_reason: Dict[str, str] = {}
+        # Doctor-reconnect grace period: room_id -> the pending asyncio
+        # Task that will finalize+close the room if the doctor doesn't
+        # come back in time. Cancelled the moment the doctor reconnects
+        # (see register() below) or the room ends for any other reason.
+        self.doctor_grace_tasks: Dict[str, asyncio.Task] = {}
+
+    def cancel_doctor_grace(self, room_id: str):
+        task = self.doctor_grace_tasks.pop(room_id, None)
+        if task is not None and not task.done():
+            task.cancel()
 
     async def register(self, room_id: str, role: str, ws: WebSocket):
         self.rooms.setdefault(room_id, {"doctor": None, "patient": None})
+
+        # Doctor reconnecting (whether inside or after the grace window
+        # technically raced past it) — cancel any pending auto-close so
+        # it doesn't fire and yank the rug out from under the session
+        # that's now live again.
+        if role == "doctor":
+            self.cancel_doctor_grace(room_id)
 
         # Item 3: multi-device/multi-tab guard. Previously this just did
         # `self.rooms[room_id][role] = ws` unconditionally — if a doctor
@@ -659,30 +692,39 @@ async def ws_signal(websocket: WebSocket, room_id: str, role: str, token: str):
         if not was_current:
             return
 
-        # If the PATIENT's socket drops (network loss, tab closed, phone
-        # locked, etc.) — not just when the doctor explicitly clicks "End
-        # Remote Session" — mark the room closed in the DB too. Without
-        # this, TelehealthRoom.status stays "live" forever in the database
-        # even though nobody is actually connected anymore, and the old
-        # link would still validate as active if reopened.
-        # Either side dropping ends the room — not just the patient. A
-        # doctor's socket dying (phone lock, tab close, network blip)
-        # used to leave the DB row stuck at status="live" forever, with
-        # the patient alone and unsupervised and the old link still
-        # validating as "active" if the page were reopened. Symmetric
-        # with the "patient never logs in, so any disconnect = session
-        # over" behavior this already had for the patient side.
+        await room_mgr.broadcast(room_id, {"type": "peer_left", "role": role})
+
+        if role == "doctor":
+            # DOCTOR disconnect: don't kill the room. patient.html already
+            # just shows "Waiting for doctor to join..." and keeps
+            # streaming (see 'peer_left' handler there), and unregister()
+            # above only stops the room's CameraManager once BOTH sides
+            # are gone — so reps/metrics keep accumulating while the
+            # doctor's away. Give the doctor DOCTOR_RECONNECT_GRACE_SECONDS
+            # to reopen the room (Join Room again) before we give up and
+            # actually finalize/close it for real.
+            room_mgr.cancel_doctor_grace(room_id)
+            room_mgr.doctor_grace_tasks[room_id] = asyncio.create_task(
+                _doctor_grace_timeout_close(room_id)
+            )
+            return
+
+        # PATIENT disconnect (network loss, tab closed, phone locked,
+        # etc.) — patient.html has no reconnect flow, so unlike the
+        # doctor this really does mean the session is over. Finalize and
+        # close immediately, same as before. Also cancel any doctor grace
+        # timer still pending so it doesn't try to double-close later.
+        room_mgr.cancel_doctor_grace(room_id)
         webhook_payload = None
         with get_db() as db:
             r = db.query(TelehealthRoom).filter(TelehealthRoom.id == room_id).first()
             if r and r.status != "closed":
-                # Item 5: this is the first side to drop, so this is the
-                # moment the room actually ends — finalize (save) BEFORE
-                # flipping status to "closed", using whatever the room's
-                # camera captured. Read room_mgr.get_camera(room_id) here
-                # specifically because it's still alive at this point even
-                # when unregister() above didn't pop it (the other side is
-                # still connected) — see _finalize_remote_session.
+                # Item 5: finalize (save) BEFORE flipping status to
+                # "closed", using whatever the room's camera captured.
+                # Read room_mgr.get_camera(room_id) here specifically
+                # because it's still alive at this point even when
+                # unregister() above didn't pop it (the doctor may still
+                # be connected) — see _finalize_remote_session.
                 webhook_payload = await _finalize_remote_session(db, r, default_end_reason="disconnected")
                 r.status = "closed"
                 r.closed_at = utcnow()
@@ -691,7 +733,51 @@ async def ws_signal(websocket: WebSocket, room_id: str, role: str, token: str):
         if webhook_payload:
             asyncio.create_task(send_session_result_webhook(webhook_payload))
 
-        await room_mgr.broadcast(room_id, {"type": "peer_left", "role": role})
+        # Doctor may still be connected watching an now-abandoned room —
+        # let them know explicitly rather than leaving them hanging.
+        doctor_ws = room_mgr.rooms.get(room_id, {}).get("doctor")
+        if doctor_ws is not None:
+            try:
+                await doctor_ws.send_json(_stamp({"type": "session_closed", "reason": "patient_disconnected"}))
+            except Exception:
+                pass
+
+
+async def _doctor_grace_timeout_close(room_id: str):
+    """Fires DOCTOR_RECONNECT_GRACE_SECONDS after a doctor disconnect. If
+    the doctor still hasn't reconnected by then, actually finalize and
+    close the room (same as an immediate close used to do), and tell the
+    patient the session is over. If the doctor DID reconnect,
+    register() already cancelled this task and we never get here."""
+    try:
+        await asyncio.sleep(DOCTOR_RECONNECT_GRACE_SECONDS)
+    except asyncio.CancelledError:
+        return
+
+    room_mgr.doctor_grace_tasks.pop(room_id, None)
+
+    webhook_payload = None
+    with get_db() as db:
+        r = db.query(TelehealthRoom).filter(TelehealthRoom.id == room_id).first()
+        if r and r.status != "closed":
+            webhook_payload = await _finalize_remote_session(db, r, default_end_reason="disconnected")
+            r.status = "closed"
+            r.closed_at = utcnow()
+            db.commit()
+
+    if webhook_payload:
+        asyncio.create_task(send_session_result_webhook(webhook_payload))
+
+    patient_ws = room_mgr.rooms.get(room_id, {}).get("patient")
+    if patient_ws is not None:
+        try:
+            await patient_ws.send_json(_stamp({"type": "session_closed", "reason": "doctor_disconnected"}))
+        except Exception:
+            pass
+        try:
+            await patient_ws.close(code=4004)  # custom: doctor never reconnected within grace window
+        except Exception:
+            pass
 
 # ── Self Training mode ──────────────────────────────────────────────────
 # Doctor schedules it (create_room, mode="self_training"), patient opens
