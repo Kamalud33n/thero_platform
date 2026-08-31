@@ -40,10 +40,14 @@ import time
 import base64
 import datetime
 
+# repo root (this file now lives in tests/) needs to be on sys.path so
+# "from database import ..." / "import app as app_module" below resolve.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 # ── env, BEFORE importing app/auth/database ────────────────────────────
 os.environ["DATABASE_URL"] = "sqlite:///./test_e2e.db"
 os.environ["MEDNOVA_JWT_ALGORITHM"] = "RS256"
-with open("test_public.pem") as f:
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_public.pem")) as f:
     os.environ["MEDNOVA_JWT_PUBLIC_KEY"] = f.read()
 os.environ["MEDNOVA_JWT_ISSUER"] = "mednova-care-test"
 os.environ["MEDNOVA_JWT_AUDIENCE"] = "thero-test"
@@ -90,7 +94,7 @@ def check(label, cond, detail=""):
 
 
 def make_therapist_token(customer_id="1"):
-    with open("test_private.pem") as f:
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_private.pem")) as f:
         private_key = f.read()
     now = datetime.datetime.utcnow()
     payload = {

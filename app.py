@@ -16,7 +16,7 @@ from services.camera_ws import ws_mgr, CameraManager
 from services import mjpeg_camera
 from services.timeutils import utcnow, utcnow_iso
 
-from routers import sessions, camera, ws, reports, analytics, patients, pages
+from routers import sessions, camera, ws, reports, analytics, patients, pages, bridge
 
 init_db()  # creates all tables (and the MySQL database itself, if missing)
 
@@ -55,6 +55,12 @@ app.include_router(reports.router)      # /api/reports/* — PDF session report 
 app.include_router(analytics.router)    # /api/analytics — today/yesterday/trend dashboard data
 app.include_router(patients.router)     # /api/patients/* — patient CRUD (backs patients.html)
 app.include_router(pages.router)        # /, /patients, /session, /reports, /analytics — dashboard UI pages
+# /api/bridge/* — MedNova Care's Laravel backend calls these server-to-server
+# for the consultation-time "measurement request" feature. BLOCKED from real
+# traffic until Nada answers the open questions in routers/bridge.py's module
+# docstring (mednova_consultant_id field name, patient age/gender, bridge
+# secret scheme) — wired up now so it's ready the moment she does.
+app.include_router(bridge.router)
 
 
 #Startup seed

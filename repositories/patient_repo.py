@@ -93,3 +93,76 @@ def assert_owns_patient(db, patient_id: str, therapist: CurrentTherapist) -> Non
     )
     if not exists:
         raise HTTPException(404, "Patient not found")
+
+
+def get_or_create_patient_by_external_id(
+    db,
+    external_id: str,
+    name: str,
+    mednova_consultant_id: str,
+) -> Patient:
+    """
+    Bridge mode's patient step (routers/bridge.py POST /api/bridge/create-session,
+    Nada's Task 1: "Auto-create patient record if external_id doesn't exist").
+
+    Takes mednova_consultant_id as a plain string rather than a
+    CurrentTherapist, because the bridge endpoint is HMAC-authenticated
+    server-to-server (auth.verify_bridge_hmac) — there is no bridge JWT and
+    therefore no CurrentTherapist to build in that request path. See the
+    OPEN QUESTION note on auth.issue_bridge_doctor_token: as of this
+    writing, Nada's documented bridge request body has no field carrying
+    this value at all, so callers currently have nothing correct to pass
+    here. Do not call this with a placeholder/empty value — that would
+    silently attach a bridge-created patient to the wrong therapist (or an
+    unowned one), defeating the isolation guarantee every other function in
+    this module exists to enforce. Confirm the field name with Nada before
+    wiring this into routers/bridge.py.
+
+    Lookup is scoped by (external_id, mednova_consultant_id) together, not
+    external_id alone — two different therapists could plausibly have two
+    different patients that happen to share an external_id from MedNova's
+    side (e.g. a data entry collision), and this must not cross-match them.
+
+    Unlike every other write in this module, this one does NOT go through
+    owned_patients_query()'s existing-patient-only assumption: it creates a
+    new row on a miss rather than raising 404, since "doesn't exist yet" is
+    the expected, common case here (Nada's spec), not an error.
+    """
+    if not mednova_consultant_id:
+        raise HTTPException(500, "get_or_create_patient_by_external_id called without a mednova_consultant_id — refusing to create an unowned patient row")
+    if not external_id:
+        raise HTTPException(400, "patient_external_id is required")
+
+    patient = (
+        db.query(Patient)
+        .filter(
+            Patient.external_id == external_id,
+            Patient.mednova_consultant_id == mednova_consultant_id,
+        )
+        .first()
+    )
+    if patient is not None:
+        return patient
+
+    # Minimal record — bridge mode's create-session payload only supplies
+    # patient_name + patient_external_id, none of the clinical fields
+    # (age/gender/diagnosis/etc.) that patients.py's own Add Patient form
+    # requires. age/gender are NOT NULL on the Patient model (see
+    # models.py), so this can't literally omit them — flagged here as an
+    # open item for Nada: confirm what age/gender should be for a
+    # bridge-created patient (placeholder pending sync from MedNova's own
+    # patient record, vs. Laravel sending real values in a future payload
+    # revision) rather than this silently defaulting to something
+    # clinically meaningless.
+    patient = Patient(
+        name=name,
+        external_id=external_id,
+        mednova_consultant_id=mednova_consultant_id,
+        age=0,       # placeholder — see docstring note above, confirm with Nada
+        gender="",   # placeholder — see docstring note above, confirm with Nada
+        is_active=True,
+    )
+    db.add(patient)
+    db.commit()
+    db.refresh(patient)
+    return patient

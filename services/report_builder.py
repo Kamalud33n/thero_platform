@@ -30,7 +30,6 @@ from config import (
 from database import get_db
 from models import Patient, SessionModel, Report
 from services.helpers import calculate_recovery_score, calculate_improvement
-from services.timeutils import utcnow, to_display
 
 
 def _make_progress_chart(sessions: list) -> io.BytesIO:
@@ -38,7 +37,7 @@ def _make_progress_chart(sessions: list) -> io.BytesIO:
     idx   = list(range(1, len(plot_sessions) + 1))
     acc   = [s.accuracy_percentage for s in plot_sessions]
     rom   = [s.average_rom for s in plot_sessions]
-    dates = [to_display(s.start_time).strftime("%m/%d") for s in plot_sessions]
+    dates = [s.start_time.strftime("%m/%d") for s in plot_sessions]
 
     fig, ax1 = plt.subplots(figsize=(6.5, 2.3), dpi=150)
     fig.patch.set_facecolor("white")
@@ -188,19 +187,15 @@ def build_report_sync(
         if not all_sessions:
             raise HTTPException(404, "No sessions found for this patient")
 
-        # now_utc drives the actual filtering — it must stay in the same
-        # timezone base (UTC) as the stored start_time values. now_display
-        # is only for the human-facing label text below (see timeutils.py).
-        now_utc = utcnow()
-        now_display = to_display(now_utc)
+        now = datetime.datetime.now()
         if report_type == "weekly":
-            cutoff = now_utc - datetime.timedelta(days=7)
+            cutoff = now - datetime.timedelta(days=7)
             sessions = [s for s in all_sessions if s.start_time >= cutoff]
-            period_label = f"Weekly Report — last 7 days (as of {now_display.strftime('%Y-%m-%d')})"
+            period_label = f"Weekly Report — last 7 days (as of {now.strftime('%Y-%m-%d')})"
         elif report_type == "monthly":
-            cutoff = now_utc - datetime.timedelta(days=30)
+            cutoff = now - datetime.timedelta(days=30)
             sessions = [s for s in all_sessions if s.start_time >= cutoff]
-            period_label = f"Monthly Report — last 30 days (as of {now_display.strftime('%Y-%m-%d')})"
+            period_label = f"Monthly Report — last 30 days (as of {now.strftime('%Y-%m-%d')})"
         elif report_type == "custom":
             sessions = [
                 s for s in all_sessions
@@ -214,7 +209,7 @@ def build_report_sync(
             # all_sessions is ordered oldest -> newest, so the last element
             # is the most recent session.
             sessions = all_sessions[-1:]
-            period_label = f"Last Session Report — {to_display(sessions[0].start_time).strftime('%Y-%m-%d')}"
+            period_label = f"Last Session Report — {sessions[0].start_time.strftime('%Y-%m-%d')}"
         else:
             sessions = all_sessions
             period_label = "Full History Report"
@@ -224,9 +219,7 @@ def build_report_sync(
 
         report_dir = f"reports/{patient_id}"
         os.makedirs(report_dir, exist_ok=True)
-        # UTC is fine here — this is just for filename uniqueness, not
-        # something a human reads as a wall-clock time.
-        ts       = utcnow().strftime("%Y%m%d_%H%M%S")
+        ts       = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         filepath = os.path.join(report_dir, f"{patient_id}_{report_type}_{ts}.pdf")
 
         # 28pt margins (~20-30px range) on every side, generous internal
@@ -399,7 +392,7 @@ def build_report_sync(
         for s in sessions[-10:]:
             tbl_data.append([
                 Paragraph(s.id[:8], table_cell_style),
-                Paragraph(to_display(s.start_time).strftime("%Y-%m-%d"), table_cell_style),
+                Paragraph(s.start_time.strftime("%Y-%m-%d"), table_cell_style),
                 Paragraph(s.exercise_type[:20], table_cell_style),
                 Paragraph(f"{s.accuracy_percentage:.1f}%", table_cell_style),
                 Paragraph(f"{s.average_rom:.1f}°", table_cell_style),
@@ -437,7 +430,7 @@ def build_report_sync(
         story += [
             Spacer(1, 22),
             HRFlowable(width="100%", thickness=0.75, color=PDF_GREY_BORDER, spaceAfter=14),
-            Paragraph(f"Generated: {to_display(utcnow()).strftime('%Y-%m-%d %H:%M')}", body_style),
+            Paragraph(f"Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}", body_style),
             Spacer(1, 26),
             Paragraph("Therapist Signature: _________________________", body_style),
             Spacer(1, 10),

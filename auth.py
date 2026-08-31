@@ -468,6 +468,54 @@ def decode_doctor_session_token(token: str) -> DoctorSessionClaims:
     )
 
 
+# ─── Bridge-mode doctor access (POST /api/bridge/create-session) ─────────
+#
+# CORRECTION (Kamal, after reviewing how Remote mode's live pipeline
+# actually works): an earlier version of this file minted a separate
+# signed JWT for the bridge doctor (issue_bridge_doctor_token /
+# decode_bridge_doctor_token), modeled on issue_doctor_session_token
+# above. That assumed bridge mode would connect through routers/ws.py's
+# /ws/pose — it doesn't. Bridge mode reuses telehealth.py's Remote-mode
+# pipeline (RoomManager / ws_signal), which authenticates BOTH doctor and
+# patient with the SAME shared TelehealthRoom.token, differentiated only
+# by a `role` query param — same security model Remote mode already has
+# in production today, not something bridge mode needed to invent.
+# Removed the separate JWT scheme rather than leave unused/confusing
+# security code sitting next to the real path. See routers/bridge.py and
+# telehealth.py (ws_signal, VALID_MODES) for how mode="bridge" actually
+# authenticates.
+
+
+# ─── Bridge-mode HMAC auth (POST /api/bridge/*) ───────────────────────────
+#
+# Laravel calls the bridge endpoints server-to-server — there is no
+# therapist browser session behind these requests, so get_current_therapist
+# (bridge JWT) doesn't apply here. Same shared-secret-header pattern as
+# verify_webhook_secret below, but its OWN secret: this is thero's INBOUND
+# bridge-create/cancel auth, a different direction and permission scope
+# from MEDNOVA_WEBHOOK_SECRET (inbound patient-sync) and separate again
+# from the two OUTBOUND webhook secrets (results/schedule) — same
+# "deliberately not shared" reasoning as those, see module docstring.
+#
+# Not yet supplied by Nada as of this writing — confirm the exact
+# header name/scheme (plain shared secret vs HMAC-signed body) and get the
+# real secret from her before routers/bridge.py goes live; this function
+# assumes a plain shared-secret header for now, same as verify_webhook_secret.
+BRIDGE_HMAC_SECRET = os.getenv("MEDNOVA_BRIDGE_SECRET")
+
+
+def verify_bridge_hmac(x_bridge_secret: str = Header(None)) -> None:
+    """
+    FastAPI dependency for POST /api/bridge/create-session and
+    POST /api/bridge/cancel-session. Fails closed (500) if the secret
+    isn't configured, same posture as verify_webhook_secret.
+    """
+    if not BRIDGE_HMAC_SECRET:
+        raise HTTPException(500, "MEDNOVA_BRIDGE_SECRET is not set on this server")
+    if not x_bridge_secret or x_bridge_secret != BRIDGE_HMAC_SECRET:
+        raise HTTPException(401, "Invalid bridge secret")
+
+
 def verify_webhook_secret(x_webhook_secret: str = Header(None)) -> None:
     """
     FastAPI dependency for the Laravel -> thero patient-sync webhook.

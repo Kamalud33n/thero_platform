@@ -23,9 +23,13 @@ import time
 import base64
 import datetime
 
+# repo root (this file now lives in tests/) needs to be on sys.path so
+# "from database import ..." / "from models import ..." below resolve.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 os.environ["DATABASE_URL"] = "sqlite:///./test_isolation.db"
 os.environ["MEDNOVA_JWT_ALGORITHM"] = "RS256"
-with open("test_public.pem") as f:
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_public.pem")) as f:
     os.environ["MEDNOVA_JWT_PUBLIC_KEY"] = f.read()
 os.environ["MEDNOVA_JWT_ISSUER"] = "mednova-care-test"
 os.environ["MEDNOVA_JWT_AUDIENCE"] = "thero-test"
@@ -99,7 +103,7 @@ def main():
     client = TestClient(isolated_app)
 
     consultant_id = "iso-consultant-1"
-    with open("test_private.pem") as f:
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_private.pem")) as f:
         private_key = f.read()
     now = datetime.datetime.utcnow()
     therapist_token = jwt.encode(

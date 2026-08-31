@@ -88,6 +88,12 @@ class SessionModel(Base):
     __tablename__ = "sessions"
     id                  = Column(String(50), primary_key=True, default=new_session_id)
     patient_id          = Column(String(50), ForeignKey("patients.id"), nullable=False)
+    # MedNova Care's consultation identifier — only set for sessions
+    # created via bridge mode (routers/bridge.py, from TelehealthRoom's
+    # own consultation_id). NULL for every other session mode. Read by
+    # services/webhook.py's build_session_result_payload() so the results
+    # webhook can tell Laravel which consultation these results belong to.
+    consultation_id     = Column(String(100), nullable=True, index=True)
     exercise_type       = Column(String(100), nullable=False)
     # "left" | "right" | "both" — which side was treated as primary for rep
     # counting/scoring during this session. Per Nada: "both sides scored
@@ -218,7 +224,7 @@ class History(Base):
 
 class TelehealthRoom(Base):
     """
-    A scheduled session room — covers BOTH session modes on the /session
+    A scheduled session room — covers THREE session modes on the /session
     page (clinic/local-camera mode removed):
 
       mode = "remote"         doctor + patient live together, pose data
@@ -229,11 +235,25 @@ class TelehealthRoom(Base):
                                that patient only, metrics auto-save to the
                                patient's record exactly like a normal
                                session — no doctor socket involved.
+      mode = "bridge"         created server-to-server by MedNova Care's
+                               Laravel backend (POST /api/bridge/create-session,
+                               routers/bridge.py) mid-consultation, NOT by a
+                               therapist scheduling through thero's own UI.
+                               scheduled_at is set to "now" at creation time
+                               instead of a future appointment — see
+                               BRIDGE_LINK_VALID_HOURS in telehealth.py for
+                               why bridge rooms get a shorter expiry window
+                               than the 2h remote/self_training default.
+                               Doctor auth for this mode is a bridge-specific
+                               signed token (auth.issue_bridge_doctor_token),
+                               not the therapist's MedNova dashboard JWT —
+                               a bridge therapist_url is opened directly in a
+                               new tab with no Authorization header to carry.
 
-    Both modes are scheduled: scheduled_at is the appointment time, and the
-    link is only valid until expires_at = scheduled_at + 2h (see
-    ROOM_LINK_VALID_HOURS in telehealth.py). This replaces "create whenever,
-    open-ended link" behaviour.
+    remote/self_training are scheduled: scheduled_at is the appointment
+    time, and the link is only valid until expires_at = scheduled_at + 2h
+    (see ROOM_LINK_VALID_HOURS in telehealth.py). bridge rooms are created
+    for immediate use — see BRIDGE_LINK_VALID_HOURS instead.
     """
     __tablename__ = "telehealth_rooms"
     id            = Column(String(50), primary_key=True, default=new_room_id)
@@ -246,12 +266,39 @@ class TelehealthRoom(Base):
     # exercise. Required for mode="self_training" (no live doctor socket
     # to set it later — see telehealth.py's create_room), optional for
     # mode="remote" (doctor can still set it live once both sides connect).
+    # Also required for mode="bridge" — same reasoning, no later live
+    # doctor connection to set it (Nada's spec sends it in the initial
+    # bridge payload).
     target_rom    = Column(Float, nullable=True)
-    mode          = Column(String(20), nullable=False, default="remote")  # "remote" | "self_training"
-    status        = Column(String(20), default="pending")  # pending -> live -> closed
+    # Target rep count the doctor set when requesting the measurement
+    # (bridge mode's `target_reps` field, from Kamal's Task 1 request body —
+    # previously accepted in the docstring example but never actually read
+    # off the payload or stored anywhere). Same nullability reasoning as
+    # target_rom above: only bridge mode's caller sends this today, so it's
+    # optional for remote/self_training. Read back out at session-finalize
+    # time (telehealth.py._finalize_remote_session) to include in the
+    # results webhook payload alongside the achieved `total_reps`.
+    target_reps   = Column(Integer, nullable=True)
+    # Planned session length in seconds, set up front by the caller
+    # (bridge mode's `duration_seconds` field). Distinct from
+    # SessionModel.duration_seconds, which is the ACTUAL elapsed duration
+    # written once a session finishes — this column is the pre-session
+    # TARGET, needed before any session row necessarily exists yet.
+    # Nullable: remote/self_training don't currently set a target duration
+    # at scheduling time (duration is a live/manual stop today), only
+    # bridge mode requires it.
+    duration_seconds = Column(Integer, nullable=True)
+    # MedNova Care's consultation identifier (Nada's consultation_id).
+    # Only populated for mode="bridge" — carried through to SessionModel
+    # and the results webhook payload so Laravel knows which consultation
+    # to attach results to. Nullable for remote/self_training rooms, which
+    # have no consultation to tie back to.
+    consultation_id = Column(String(100), nullable=True, index=True)
+    mode          = Column(String(20), nullable=False, default="remote")  # "remote" | "self_training" | "bridge"
+    status        = Column(String(20), default="pending")  # pending -> live -> closed (or -> cancelled, bridge only — see routers/bridge.py cancel-session)
     session_id    = Column(String(50), ForeignKey("sessions.id"), nullable=True)
-    scheduled_at  = Column(DateTime, nullable=False)   # appointment time set by the doctor
-    expires_at    = Column(DateTime, nullable=False)   # scheduled_at + 2h — link stops working after this, in any status
+    scheduled_at  = Column(DateTime, nullable=False)   # appointment time set by the doctor; "now" for mode="bridge"
+    expires_at    = Column(DateTime, nullable=False)   # scheduled_at + 2h (remote/self_training) or + BRIDGE_LINK_VALID_HOURS (bridge) — link stops working after this, in any status
     created_at    = Column(DateTime, default=func.now())
     started_at    = Column(DateTime, nullable=True)
     closed_at     = Column(DateTime, nullable=True)

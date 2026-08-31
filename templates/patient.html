@@ -790,6 +790,25 @@ function showError(title, sub) {
     setConn(false, 'Disconnected');
 }
 
+// Camera-specific failure — unlike showError() above (dead-end states like
+// an invalid/expired link, where reloading is genuinely the only option),
+// a camera failure is often recoverable without leaving the page (closing
+// Zoom, granting the permission prompt), so this reuses the same prejoin
+// screen but leaves joinBtn visible/enabled as a Retry instead of hiding
+// it — clicking it re-runs joinSession(), which calls
+// getPatientCameraStream() again with no reload. See Tasks_Kamal_Python.md
+// Task 8.
+function showCameraRetry(message) {
+    document.getElementById('prejoinIcon').className = 'fas fa-video-slash big-icon error-screen';
+    document.getElementById('prejoinTitle').textContent = 'Camera Unavailable';
+    document.getElementById('prejoinSub').textContent = message;
+    const btn = document.getElementById('joinBtn');
+    btn.style.display = 'inline-flex';
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-rotate-right"></i> Retry';
+    setConn(false, 'Camera blocked');
+}
+
 function setConn(live, text) {
     document.getElementById('connDot').classList.toggle('live', live);
     document.getElementById('connText').textContent = text;
@@ -833,7 +852,21 @@ window.joinSession = async function joinSession() {
             : await getPatientCameraStream(TIER_PROFILES[deviceTier].videoFps);
     } catch (e) {
         console.error(e);
-        showError('Camera/Mic Blocked', 'Please allow camera and microphone access, then reload the page.');
+        // Same error-name split as session.html's doctor-side
+        // getRemoteLocalMedia() — NotReadableError/TrackStartError means
+        // the OS/browser handed the camera to another app (Zoom, another
+        // tab), NotAllowedError means the permission prompt was denied
+        // (or blocked at the OS level), NotFoundError means no camera
+        // exists on this device at all.
+        let message = 'Camera unavailable. Click Retry to try again.';
+        if (e.name === 'NotReadableError' || e.name === 'TrackStartError') {
+            message = 'Camera may be in use by another app (e.g. Zoom). Close it in that app, then click Retry.';
+        } else if (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError') {
+            message = 'Camera/mic access was blocked. Allow access in your browser, then click Retry.';
+        } else if (e.name === 'NotFoundError') {
+            message = 'No camera found on this device.';
+        }
+        showCameraRetry(message);
         return;
     }
 

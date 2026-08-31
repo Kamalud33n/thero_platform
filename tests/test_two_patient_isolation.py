@@ -37,9 +37,13 @@ import datetime
 import subprocess
 import socket
 
+# repo root (this file now lives in tests/) needs to be on sys.path so
+# "from database import ..." / "from models import ..." below resolve.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 os.environ["DATABASE_URL"] = "sqlite:///./test_two_patient.db"
 os.environ["MEDNOVA_JWT_ALGORITHM"] = "RS256"
-with open("test_public.pem") as f:
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_public.pem")) as f:
     os.environ["MEDNOVA_JWT_PUBLIC_KEY"] = f.read()
 os.environ["MEDNOVA_JWT_ISSUER"] = "mednova-care-test"
 os.environ["MEDNOVA_JWT_AUDIENCE"] = "thero-test"
@@ -120,7 +124,7 @@ def test_in_process():
     init_db()
     client = TestClient(app_module.app)
 
-    with open("test_private.pem") as f:
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_private.pem")) as f:
         private_key = f.read()
 
     def setup_patient(consultant_id, name):
@@ -226,7 +230,7 @@ def test_live_uvicorn():
     proc = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "app:app", "--host", "127.0.0.1", "--port", str(port),
          "--log-level", "warning"],
-        env=env, cwd=os.path.dirname(os.path.abspath(__file__)) or ".",
+        env=env, cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))) or ".",
     )
     try:
         # Wait for the server to actually accept connections.
@@ -244,7 +248,7 @@ def test_live_uvicorn():
             return
 
         async def run():
-            with open("test_private.pem") as f:
+            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_private.pem")) as f:
                 private_key = f.read()
 
             async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as http:

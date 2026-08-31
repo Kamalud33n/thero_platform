@@ -392,6 +392,16 @@ class SessionMetrics:
         self._rep_quality_buffer: "collections.deque" = collections.deque(maxlen=30)
         self._current_fatigue_score = 0.0
         self._last_fatigue_rep_count = 0
+        # Raw achieved peak-angle (degrees) per completed rep — same trigger
+        # point/lock as _rep_quality_buffer above, but keeping the actual
+        # angle instead of a target-relative %, so a real "how far did the
+        # patient actually move" figure exists for live remote/bridge
+        # sessions. Mirrors what derive_session_summary_stats() already
+        # computes server-side from a client's itemized exercise_results
+        # (rom_achieved) for the self-training/local save path — this is
+        # the live-pipeline equivalent, since a live remote/bridge session
+        # has no such itemized payload to derive it from at finalize time.
+        self._rom_buffer: "collections.deque" = collections.deque(maxlen=30)
 
     # Exercise state
     def set_exercise_state(self, exercise_type: Optional[str] = None, target_rom: Optional[float] = None):
@@ -525,12 +535,23 @@ class SessionMetrics:
                 self._current_balance_score = round(score, 1)
             return self._current_balance_score
 
+    def get_average_rom(self) -> float:
+        """Average of the actual achieved peak angle (degrees) across every
+        completed rep so far this session — see _rom_buffer in __init__.
+        0.0 if no rep has completed yet, same empty-state convention as
+        get_accuracy() above."""
+        with self._fatigue_lock:
+            if not self._rom_buffer:
+                return 0.0
+            return round(sum(self._rom_buffer) / len(self._rom_buffer), 1)
+
     def _record_rep_quality(self, peak_angle: Optional[float], target_rom: float):
         if peak_angle is None or target_rom <= 0:
             return
         quality = max(0.0, min(100.0, (peak_angle / target_rom) * 100))
         with self._fatigue_lock:
             self._rep_quality_buffer.append(quality)
+            self._rom_buffer.append(peak_angle)
             n = len(self._rep_quality_buffer)
             if n >= 4:
                 half   = n // 2
@@ -570,6 +591,7 @@ class SessionMetrics:
             self._current_balance_score = 100.0
         with self._fatigue_lock:
             self._rep_quality_buffer.clear()
+            self._rom_buffer.clear()
             self._current_fatigue_score = 0.0
             self._last_fatigue_rep_count = 0
 

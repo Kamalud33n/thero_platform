@@ -1,36 +1,30 @@
-# Environment / secrets
-.env
-*.pem
-*.key
-
-# Python
+# ── Python ──────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
 venv/
-env/
-.pytest_cache/
-.mypy_cache/
 
-# Runtime-generated data (kept as empty dirs via .gitkeep)
-data/*
-!data/.gitkeep
-!data/reports/
+# ── Secrets / local config ─────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Runtime data / generated output (not source) ────────────────────────
+*.db
+*.sqlite3
+uploads/*
+!uploads/.gitkeep
 data/reports/*
 !data/reports/.gitkeep
-
 reports/*
 !reports/.gitkeep
 
-uploads/*
-!uploads/.gitkeep
+# ── Test artifacts generated at run time ────────────────────────────────
+tests/*.db
 
-# SQLite (if DATABASE_URL ever falls back to sqlite locally)
-*.db
-*.sqlite3
-
-# OS / editor
+# ── OS / editor ──────────────────────────────────────────────────────────
 .DS_Store
-.idea/
+*.swp
 .vscode/
+.idea/

@@ -440,6 +440,26 @@
             z-index: 12;
         }
         .remote-doctor-pip video { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+        /* Doctor's own camera failed (blocked by another app, permission
+           denied, etc.) — shown inside the same PIP box instead of a blank
+           dark square, so the doctor has a visible reason + a way to
+           recover without losing the call. See getRemoteLocalMedia() /
+           showDoctorCamError() / retryDoctorCamera(). */
+        .remote-doctor-pip-error {
+            position: absolute; inset: 0;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            gap: 4px;
+            background: rgba(20,20,20,0.92);
+            z-index: 2;
+        }
+        .remote-doctor-pip-error i.fa-video-slash { color: #ff6b6b; font-size: 15px; }
+        .remote-doctor-pip-error button {
+            border: none; cursor: pointer;
+            width: 22px; height: 22px; border-radius: 50%;
+            background: rgba(255,255,255,0.18); color: #fff; font-size: 10px;
+            display: flex; align-items: center; justify-content: center;
+        }
+        .remote-doctor-pip-error button:hover { background: rgba(255,255,255,0.32); }
 
         .remote-angle-panel { display: flex; flex-direction: column; gap: 8px; }
         .remote-angle-chip {
@@ -462,6 +482,70 @@
         @media (max-width: 600px) {
             .result-stats { grid-template-columns: repeat(2,1fr); }
         }
+
+        /* ── Bridge mode (routers/bridge.py doctor sessions) ────────────────
+           Toggled via body.bridge-mode by initBridgeMode() below. Hides the
+           parts of this dashboard that don't apply when a doctor arrives
+           here from a MedNova Care consultation rather than logging into
+           thero directly — Nada's Task 5 ("disable, don't delete"). */
+        body.bridge-mode .sidebar-nav a:not(.active),
+        body.bridge-mode .patient-selector,
+        body.bridge-mode .sessions-lists-row,
+        body.bridge-mode button[onclick="openSelfTrainingModal()"] {
+            display: none !important;
+        }
+        /* Exercise config becomes read-only display, not an editable form —
+           it was already set from MedNova Care's consultation, not chosen
+           here (Doctor_Patient_Request_Flow.md: "read-only — set from
+           MedNova Care form"). */
+        body.bridge-mode .exercise-controls select,
+        body.bridge-mode .exercise-controls input,
+        body.bridge-mode .exercise-controls button {
+            pointer-events: none;
+            opacity: 0.75;
+        }
+
+        /* Rejoin banner — Task 6. Pinned at the very top of the content
+           area (not buried at the bottom), only shown when the doctor's
+           signaling socket drops while the room is presumably still live. */
+        #rejoinBanner {
+            display: none;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 12px 18px;
+            margin-bottom: 14px;
+            border-radius: 12px;
+            background: #FFF4E5;
+            border: 1px solid #F0B95C;
+            color: #7A4A00;
+            font-weight: 600;
+        }
+        #rejoinBanner.show { display: flex; }
+        #rejoinBanner button {
+            border: none;
+            border-radius: 8px;
+            padding: 8px 16px;
+            background: #D68F35;
+            color: #fff;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        /* Post-session screen — Task 7. Replaces the normal "back to idle
+           dashboard" state, since a bridge doctor has no dashboard to
+           return to; they close the tab and go back to MedNova Care. */
+        #bridgeEndedScreen {
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            padding: 60px 20px;
+            text-align: center;
+        }
+        #bridgeEndedScreen.show { display: flex; }
+        #bridgeEndedScreen i { font-size: 40px; color: #1D8A6D; }
     </style>
 </head>
 <body>
@@ -524,6 +608,19 @@
         </header>
 
         <div class="content-area">
+            <!-- Task 6: pinned top, shown only when the doctor's signaling
+                 socket drops while the room is presumably still live. -->
+            <div id="rejoinBanner">
+                <span><i class="fas fa-triangle-exclamation"></i> You've been disconnected from the session.</span>
+                <button onclick="rejoinSession()"><i class="fas fa-rotate-right"></i> Rejoin Session</button>
+            </div>
+            <!-- Task 7: bridge mode's replacement for the normal
+                 "back to idle dashboard" state after End Session. -->
+            <div id="bridgeEndedScreen">
+                <i class="fas fa-circle-check"></i>
+                <h2>Session complete</h2>
+                <p>Results have been sent to your consultation. You can close this tab.</p>
+            </div>
             <div class="session-container">
 
                 <!-- Camera -->
@@ -567,6 +664,15 @@
                         <canvas id="remoteOverlayCanvas" style="display:none;position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:8;"></canvas>
                         <div class="remote-doctor-pip" id="remoteDoctorPip" style="display:none">
                             <video id="remoteDoctorVideo" autoplay playsinline muted></video>
+                            <!-- Doctor camera error state — hidden unless getRemoteLocalMedia()
+                                 fails. title attr gives the full reason on hover since the PIP
+                                 itself is too small to show a sentence. -->
+                            <div class="remote-doctor-pip-error" id="remoteDoctorPipError" style="display:none" title="">
+                                <i class="fas fa-video-slash"></i>
+                                <button onclick="retryDoctorCamera()" title="Retry camera">
+                                    <i class="fas fa-rotate-right"></i>
+                                </button>
+                            </div>
                         </div>
                         <div class="no-patient" id="remoteNoPatient" style="display:none">
                             <i class="fas fa-user fa-2x"></i>
@@ -597,6 +703,18 @@
                         <div id="cameraPlaceholder" class="camera-placeholder">
                             <i class="fas fa-wifi fa-3x"></i>
                             <p>Start a Remote Session or schedule Self Training to begin</p>
+                        </div>
+
+                        <!-- Bridge mode's entry screen — Doctor_Patient_Request_Flow.md:
+                             "everything pre-set (patient name, exercise type, target ROM,
+                             duration, all read-only) — doctor just clicks Join." Shown/
+                             populated by initBridgeMode() below; hidden after joinBridgeRoom(). -->
+                        <div id="bridgeJoinPanel" class="camera-placeholder" style="display:none">
+                            <i class="fas fa-user-doctor fa-3x"></i>
+                            <p id="bridgeJoinSummary">Loading session details…</p>
+                            <button class="btn-primary" onclick="joinBridgeRoom(bridgeRoomIdFromUrl, bridgeTokenFromUrl)">
+                                <i class="fas fa-video"></i> Join
+                            </button>
                         </div>
                     </div>
 
@@ -934,12 +1052,20 @@ let selfTrainingSessionsList = loadList(SELF_LIST_KEY);
 
 // Boot 
 document.addEventListener('DOMContentLoaded', () => {
-    loadPatients();
+    initBridgeMode().then(() => {
+        // loadPatients() calls /api/patients, which is JWT-gated — a bridge
+        // doctor has no MedNova dashboard session, so that call would just
+        // 401. Skip it (and the Remote/Self Training lists, already hidden
+        // via CSS) rather than firing a request that can only fail.
+        if (!isBridgeMode) {
+            loadPatients();
+            renderRemoteSessionsList();
+            renderSelfTrainingSessionsList();
+            refreshSelfTrainingStatuses();
+            setInterval(refreshSelfTrainingStatuses, 20000);
+        }
+    });
     retryPendingSessions();
-    renderRemoteSessionsList();
-    renderSelfTrainingSessionsList();
-    refreshSelfTrainingStatuses();
-    setInterval(refreshSelfTrainingStatuses, 20000);
     document.getElementById('menuToggle')?.addEventListener('click', () =>
         document.querySelector('.sidebar').classList.toggle('active'));
 });
@@ -1528,6 +1654,53 @@ let remoteLocalStream = null;
 let remoteMicOn = true, remoteCamOn = true;
 let remotePatientConnected = false;
 
+// ─── Bridge mode (routers/bridge.py) ───────────────────────────────────────
+// A doctor arriving here via a bridge therapist_url (?bridge_room_id=&
+// bridge_token=) has no MedNova dashboard JWT — the room already exists
+// (created server-to-server by Laravel), so bridge mode skips the whole
+// Generate-Link flow and joins directly with the token already in the URL.
+let isBridgeMode = false;
+let _remoteEndedIntentionally = false; // distinguishes "doctor clicked End Session" from an unexpected drop, for the rejoin banner below
+let bridgeRoomIdFromUrl = null;
+let bridgeTokenFromUrl  = null;
+
+// Reads ?bridge_room_id=&bridge_token= from the URL (see routers/bridge.py's
+// therapist_url), hides the parts of the dashboard that don't apply
+// (Task 5), and shows the pre-filled read-only Join panel instead of the
+// normal "Start a Remote Session or schedule Self Training" placeholder.
+// No-op (isBridgeMode stays false) when those params aren't present, so
+// this is safe to always call on every /session page load.
+async function initBridgeMode() {
+    const params = new URLSearchParams(location.search);
+    const roomId = params.get('bridge_room_id');
+    const token  = params.get('bridge_token');
+    if (!roomId || !token) return;
+
+    isBridgeMode = true;
+    bridgeRoomIdFromUrl = roomId;
+    bridgeTokenFromUrl  = token;
+    document.body.classList.add('bridge-mode');
+
+    document.getElementById('cameraPlaceholder').style.display = 'none';
+    const panel = document.getElementById('bridgeJoinPanel');
+    panel.style.display = 'flex';
+
+    // GET /api/telehealth/room/{room_id} is the existing patient-facing
+    // room-lookup endpoint (telehealth.py) — token-gated, not JWT-gated,
+    // so it already works for a bridge doctor with no dashboard session.
+    try {
+        const res = await fetch(`/api/telehealth/room/${roomId}?token=${encodeURIComponent(token)}`);
+        if (!res.ok) throw new Error('room lookup failed');
+        const room = await res.json();
+        document.getElementById('bridgeJoinSummary').textContent =
+            `${room.exercise_type || 'Exercise'} · Target ROM ${room.target_rom || '—'}° · ${room.affected_side || 'both'} side`;
+    } catch (e) {
+        console.error('initBridgeMode: room lookup failed', e);
+        document.getElementById('bridgeJoinSummary').textContent =
+            'Could not load session details — the link may have expired.';
+    }
+}
+
 // ─── Skeleton overlay drawing for the remote patient's video ──────────────
 // The patient's own page (patient.html) already runs MediaPipe locally and
 // sends the computed joint points (normalized 0..1 coords, already filtered
@@ -1717,6 +1890,39 @@ async function joinRemoteRoom(roomId) {
     enterRemoteVideoMode();
     await connectDoctorSignaling();
     showToast('Joined room — waiting for patient...', 'success');
+}
+
+// Bridge mode's equivalent of joinRemoteRoom above. The room was created
+// server-to-server (routers/bridge.py) rather than by THIS browser's
+// generateRemoteLink(), so it was never added to remoteSessionsList — the
+// normal lookup-by-id would just fail "Room not found". roomId/token come
+// straight from the URL (see initBridgeMode) instead.
+async function joinBridgeRoom(roomId, token) {
+    remoteRoomId = roomId;
+    remoteToken  = token;
+
+    document.getElementById('bridgeJoinPanel')?.style.setProperty('display', 'none');
+
+    enterRemoteVideoMode();
+    await connectDoctorSignaling();
+    showToast('Joined — waiting for patient...', 'success');
+}
+
+// Task 6: called from the pinned rejoin banner. Reuses whatever
+// remoteRoomId/remoteToken are still set from the original join — works
+// for both bridge mode and a normal Remote session, since neither one
+// clears those on an unexpected drop (only endRemoteSession() does).
+async function rejoinSession() {
+    if (!remoteRoomId || !remoteToken) {
+        showToast('Nothing to rejoin — the session ended.', 'error');
+        return;
+    }
+    document.getElementById('rejoinBanner').classList.remove('show');
+    if (remoteWs) { try { remoteWs.close(); } catch (e) {} }
+    if (remotePeerConn) { try { remotePeerConn.close(); } catch (e) {} }
+    enterRemoteVideoMode();
+    await connectDoctorSignaling();
+    showToast('Reconnected', 'success');
 }
 
 //  Modal open/close
@@ -2103,17 +2309,67 @@ function showResultModalFromData(sessionData, patientName) {
     document.getElementById('resultModal').classList.add('active');
 }
 
-// Doctor's own camera/mic (for the two-way call) 
+// Doctor camera error UI — see the .remote-doctor-pip-error block in
+// #remoteDoctorPip and the CSS above. Shown in place of the (otherwise
+// blank/dark) PIP video whenever getRemoteLocalMedia() fails, so a camera
+// conflict doesn't silently drop the doctor into viewer-only mode with no
+// visible explanation, matching the "Error message + Retry button"
+// behavior Doctor_Patient_Request_Flow.md's error table specifies.
+function showDoctorCamError(message) {
+    const panel = document.getElementById('remoteDoctorPipError');
+    if (!panel) return;
+    panel.title = message;
+    panel.style.display = 'flex';
+}
+
+function hideDoctorCamError() {
+    const panel = document.getElementById('remoteDoctorPipError');
+    if (panel) panel.style.display = 'none';
+}
+
+// Doctor's own camera/mic (for the two-way call)
 async function getRemoteLocalMedia() {
     if (remoteLocalStream) return remoteLocalStream;
     try {
         remoteLocalStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
         document.getElementById('remoteDoctorVideo').srcObject = remoteLocalStream;
+        hideDoctorCamError();
     } catch (e) {
+        // NotReadableError/TrackStartError: OS/browser handed the camera to
+        // another app (Zoom, another tab, etc.) — the doc's exact "Camera
+        // blocked by another app" scenario. NotAllowedError: permission
+        // denied/revoked. Anything else: no camera device present at all.
+        let message = 'Camera unavailable — click retry to try again.';
+        if (e.name === 'NotReadableError' || e.name === 'TrackStartError') {
+            message = 'Camera is in use by another app (e.g. Zoom). Close it, then retry.';
+        } else if (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError') {
+            message = 'Camera/mic permission denied. Allow access, then retry.';
+        } else if (e.name === 'NotFoundError') {
+            message = 'No camera found on this device.';
+        }
         console.warn('remote: doctor camera/mic not available, joining as viewer-only:', e);
         remoteLocalStream = null;
+        showDoctorCamError(message);
+        showToast(message, 'error', 5000);
     }
     return remoteLocalStream;
+}
+
+// Retry button inside the doctor's PIP error state. A plain re-attempt at
+// getUserMedia can't get a newly-acquired track to the patient on its own
+// — the doctor's RTCPeerConnection was already negotiated as answerer, and
+// nothing here renegotiates it. Rather than show a "Retry" that silently
+// does nothing useful, this reuses the same close-and-reconnect sequence
+// rejoinSession() already relies on (Task 6): a fresh connectDoctorSignaling()
+// call re-requests the camera and, if it succeeds this time, negotiates a
+// brand-new peer connection that actually carries the doctor's video —
+// same pattern the patient side already tolerates for any doctor drop.
+async function retryDoctorCamera() {
+    hideDoctorCamError();
+    showToast('Retrying camera...', 'success', 2000);
+    if (remoteWs) { try { remoteWs.close(); } catch (e) {} }
+    if (remotePeerConn) { try { remotePeerConn.close(); } catch (e) {} }
+    await connectDoctorSignaling();
 }
 
 // WebRTC (doctor is always the answerer — patient always offers) 
@@ -2281,7 +2537,21 @@ async function connectDoctorSignaling() {
             showToast('This room was opened in another tab/device — disconnected here.', 'error', 6000);
             document.getElementById('statusText').textContent = 'Disconnected (opened elsewhere)';
             document.getElementById('statusDot').className    = 'badge-dot error';
+            return;
         }
+
+        // Task 6: any OTHER close while the doctor didn't explicitly click
+        // "End Session" is treated as an unexpected drop — accidental tab
+        // navigation, network blip, laptop sleep — and gets a pinned
+        // Rejoin button rather than silently leaving the doctor stuck on a
+        // frozen video with no way back in short of a full page reload.
+        // remoteRoomId/remoteToken are deliberately left set (not cleared)
+        // by everything BUT endRemoteSession(), so rejoinSession() above
+        // still has what it needs to reconnect.
+        if (!_remoteEndedIntentionally && remoteRoomId) {
+            document.getElementById('rejoinBanner').classList.add('show');
+        }
+        _remoteEndedIntentionally = false;
     };
 }
 
@@ -2370,11 +2640,32 @@ async function endRemoteSession(skipConfirm = false) {
     // re-entering stopSession() when *it* is the one calling us.
     if (sessionActive) stopSession();
 
+    // Set BEFORE the close call so the rejoin-banner logic in remoteWs's
+    // onclose handler (fired as a side effect of remoteWs.close() below)
+    // can tell "doctor intentionally ended this" apart from an unexpected
+    // drop, and skip showing the Rejoin banner.
+    _remoteEndedIntentionally = true;
+
     if (remoteRoomId) {
-        try { await fetch(`/api/telehealth/close-room/${remoteRoomId}`, { method: 'POST' }); }
+        try {
+            if (isBridgeMode) {
+                // Bridge doctor has no MedNova dashboard JWT — close-room
+                // (get_current_therapist-gated) would 401. Use the
+                // token-authenticated bridge equivalent instead (Kamal,
+                // telehealth.py bridge_close_room).
+                await fetch(`/api/telehealth/bridge-close-room/${remoteRoomId}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token: remoteToken }),
+                });
+            } else {
+                await fetch(`/api/telehealth/close-room/${remoteRoomId}`, { method: 'POST' });
+            }
+        }
         catch (e) { console.error('close-room failed:', e); }
 
-        // Room is over — drop it from the "Remote Sessions" list.
+        // Room is over — drop it from the "Remote Sessions" list. (No-op
+        // in bridge mode: the room was never in this list to begin with.)
         remoteSessionsList = remoteSessionsList.filter(r => r.roomId !== remoteRoomId);
         saveList(REMOTE_LIST_KEY, remoteSessionsList);
         renderRemoteSessionsList();
@@ -2386,6 +2677,17 @@ async function endRemoteSession(skipConfirm = false) {
 
     remoteRoomId = remoteToken = remoteWs = remotePeerConn = remoteLocalStream = null;
     remotePatientConnected = false;
+
+    if (isBridgeMode) {
+        // Task 7 — no dashboard to return to, so tell them plainly instead
+        // of resetting the screen back to an idle local-camera placeholder.
+        exitRemoteVideoMode();
+        document.getElementById('bridgeJoinPanel').style.display = 'none';
+        document.getElementById('bridgeEndedScreen').classList.add('show');
+        document.getElementById('rejoinBanner').classList.remove('show');
+        showToast('Session complete', 'success');
+        return;
+    }
 
     // Hand the shared camera screen back to local-camera mode
     exitRemoteVideoMode();

@@ -35,7 +35,13 @@ router = APIRouter()
 # time, regardless of whether it was ever opened. Matches the "scheduled
 # time la irunthu 2hr la expire aaganum" requirement for both modes.
 ROOM_LINK_VALID_HOURS = 2
-VALID_MODES = ("remote", "self_training")
+# Bridge-mode rooms (routers/bridge.py) are created for IMMEDIATE use
+# mid-consultation, not a future appointment — scheduled_at is "now" at
+# creation time (see models.py TelehealthRoom docstring), so a 2h window
+# from "now" would badly outlive a single consultation. Shorter, dedicated
+# window — PLACEHOLDER, confirm this value with Nada.
+BRIDGE_LINK_VALID_HOURS = 0.5  # 30 min — PLACEHOLDER, confirm with Nada
+VALID_MODES = ("remote", "self_training", "bridge")
 
 # How long a Remote room stays alive after the DOCTOR's socket drops
 # (browser closed by mistake, black screen from a Zoom camera conflict,
@@ -454,15 +460,26 @@ async def room_status(
 
 async def _finalize_remote_session(db, room: TelehealthRoom, default_end_reason: str) -> Optional[Dict[str, Any]]:
     """
-    Item 5: persist whatever this Remote room's server-side CameraManager
+    Item 5: persist whatever this room's server-side CameraManager
     (room_mgr.cameras[room.id] — the same pipeline driving the doctor's
     live reps/accuracy view during the call) has accumulated, as a normal
     SessionModel row. Same destination/shape as Self Training's save
     endpoint and routers/ws.py's abandon-on-disconnect handler — Reports/
-    Analytics/patient history don't need to know this came from a Remote
-    call. Call this from wherever a Remote room's life actually ends:
-    the doctor's explicit "End Remote Session" (close_room) AND a socket
-    drop (ws_signal's finally block) both call this.
+    Analytics/patient history don't need to know this came from a live
+    call. Call this from wherever a room's life actually ends: the
+    doctor's explicit "End Session" (close_room / the bridge-mode
+    equivalent) AND a socket drop (ws_signal's finally block) both call
+    this.
+
+    Despite the name, this now also finalizes mode="bridge" rooms —
+    bridge mode reuses this exact live pipeline (RoomManager/ws_signal),
+    just created via routers/bridge.py instead of a therapist scheduling
+    through thero's own UI. The only bridge-specific addition is carrying
+    room.consultation_id onto the resulting SessionModel, so
+    services/webhook.py's results payload can tell MedNova Care which
+    consultation these results belong to (Nada's Task 2). consultation_id
+    is None for ordinary remote/self_training rooms, so this is a no-op
+    for the existing modes.
 
     Idempotent by design: a room only ever gets ONE session_id, so
     whichever of those two call sites gets there first wins — the other
@@ -497,6 +514,7 @@ async def _finalize_remote_session(db, room: TelehealthRoom, default_end_reason:
 
     sess = SessionModel(
         patient_id           = room.patient_id,
+        consultation_id      = room.consultation_id,  # None for remote/self_training; set for bridge (Nada's Task 2)
         exercise_type        = exercise_type or room.exercise_type or "General Exercise",
         affected_side        = m.get_affected_side() or room.affected_side or "both",
         start_time           = started,
@@ -505,7 +523,14 @@ async def _finalize_remote_session(db, room: TelehealthRoom, default_end_reason:
         total_reps           = reps,
         completed_reps       = reps,
         accuracy_percentage  = m.get_accuracy(),
-        average_rom          = target_rom or 0.0,
+        # Was `target_rom or 0.0` — silently echoed the PRESCRIBED rom back
+        # as if it were the achieved one, so a bridge/remote session's
+        # webhook always reported "measured == target" regardless of what
+        # actually happened. get_average_rom() is the real per-rep achieved
+        # figure (services/metrics.py SessionMetrics._rom_buffer) — same
+        # concept derive_session_summary_stats() already computes for the
+        # self-training save path, just sourced from the live pipeline here.
+        average_rom          = m.get_average_rom(),
         stability_score      = m.get_stability(),
         balance_score        = m.get_balance(),
         movement_smoothness  = m.get_smoothness(),
@@ -526,7 +551,16 @@ async def _finalize_remote_session(db, room: TelehealthRoom, default_end_reason:
 
     # Item 27: build BEFORE commit/context exit — see
     # build_session_result_payload() docstring for why.
-    return build_session_result_payload(sess)
+    #
+    # target_rom passed here is the LIVE value (m.get_exercise_state(),
+    # this function's own `target_rom` local) rather than room.target_rom
+    # directly — remote mode lets the doctor change it mid-call, so the
+    # live pipeline's copy is the current one; bridge mode never changes
+    # it live, so the two are always equal there anyway. target_reps has
+    # no live-update path (nothing lets a doctor change it mid-session),
+    # so room.target_reps — the value from the original bridge request —
+    # is the only copy that exists.
+    return build_session_result_payload(sess, target_rom=target_rom, target_reps=room.target_reps)
 
 
 @router.post("/api/telehealth/close-room/{room_id}")
@@ -542,6 +576,49 @@ async def close_room(
     webhook_payload = None
     with get_db() as db:
         room = get_owned_room(db, room_id, therapist)
+        webhook_payload = await _finalize_remote_session(db, room, default_end_reason="stopped_by_therapist")
+        room.status    = "closed"
+        room.closed_at = utcnow()
+        db.commit()
+
+    if webhook_payload:
+        asyncio.create_task(send_session_result_webhook(webhook_payload))
+
+    await room_mgr.broadcast(room_id, {"type": "session_closed"})
+    return JSONResponse({"success": True, "message": "Room closed"})
+
+
+@router.post("/api/telehealth/bridge-close-room/{room_id}")
+async def bridge_close_room(room_id: str, payload: Dict[str, Any]):
+    """
+    Bridge mode's equivalent of close_room above — the doctor's "End
+    Session" action on the /room page. NOT part of Nada's Laravel-facing
+    bridge contract (Tasks_Kamal_Python.md doesn't mention this endpoint);
+    this exists purely because a bridge doctor has no dashboard JWT to
+    satisfy close_room's get_current_therapist/get_owned_room check —
+    their only credential is the room's own token (see auth.py's
+    "Bridge-mode doctor access" note). So this authenticates the same way
+    ws_signal already does for bridge rooms: token must match room.token,
+    and mode must actually be "bridge" — a leaked/guessed token can't be
+    used to close a real scheduled remote/self_training room this way.
+
+    Body: {"token": "<room.token>"}
+    """
+    token = payload.get("token")
+    if not token:
+        raise HTTPException(400, "token is required")
+
+    webhook_payload = None
+    with get_db() as db:
+        room = db.query(TelehealthRoom).filter(TelehealthRoom.id == room_id).first()
+        if not room or room.mode != "bridge" or room.token != token:
+            # Same shape of response either way (room doesn't exist, wrong
+            # mode, or wrong token) — don't let this endpoint be used to
+            # probe which case it was.
+            raise HTTPException(404, "Room not found")
+        if room.status == "closed":
+            return JSONResponse({"success": True, "message": "Room already closed"})
+
         webhook_payload = await _finalize_remote_session(db, room, default_end_reason="stopped_by_therapist")
         room.status    = "closed"
         room.closed_at = utcnow()
@@ -586,7 +663,7 @@ async def ws_signal(websocket: WebSocket, room_id: str, role: str, token: str):
 
     with get_db() as db:
         room = db.query(TelehealthRoom).filter(TelehealthRoom.id == room_id).first()
-        if not room or room.token != token or room.mode != "remote":
+        if not room or room.token != token or room.mode not in ("remote", "bridge"):
             await websocket.close(code=4001)
             return
         if room.status == "closed":
