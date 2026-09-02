@@ -85,6 +85,7 @@ def build_session_result_payload(
     sess,
     target_rom: Optional[float] = None,
     target_reps: Optional[int] = None,
+    room_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Snapshots every scalar column this webhook needs off a SessionModel
@@ -104,6 +105,17 @@ def build_session_result_payload(
     (routers/bridge.py) specifically so this function doesn't need to join
     back to the room to find it. NULL for every non-bridge session.
 
+    room_id is NOT a SessionModel column (unlike consultation_id) — there
+    was no existing need to persist it there, so it's passed in by the
+    caller the same way target_rom/target_reps are: only the two
+    room-based call sites in telehealth.py (_finalize_remote_session for
+    Remote/Bridge, save_self_training_session for Self Training) have a
+    TelehealthRoom in scope and pass room.id through. routers/sessions.py
+    and routers/ws.py's ordinary in-app sessions have no room at all, so
+    this stays None there — Nada asked for it (2026-09-01) as a more
+    reliable match key than consultation_id, since it's unique for every
+    session including non-bridge ones.
+
     target_rom / target_reps are NOT SessionModel columns — they're the
     doctor-set targets from the bridge request (TelehealthRoom.target_rom /
     .target_reps), which only the caller has (SessionModel only stores what
@@ -118,6 +130,7 @@ def build_session_result_payload(
     """
     return {
         "session_id":          sess.id,
+        "room_id":             room_id,
         "patient_id":          sess.patient_id,
         "consultation_id":     sess.consultation_id,
         "exercise_type":       sess.exercise_type,

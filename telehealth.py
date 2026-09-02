@@ -560,7 +560,9 @@ async def _finalize_remote_session(db, room: TelehealthRoom, default_end_reason:
     # no live-update path (nothing lets a doctor change it mid-session),
     # so room.target_reps — the value from the original bridge request —
     # is the only copy that exists.
-    return build_session_result_payload(sess, target_rom=target_rom, target_reps=room.target_reps)
+    return build_session_result_payload(
+        sess, target_rom=target_rom, target_reps=room.target_reps, room_id=room.id,
+    )
 
 
 @router.post("/api/telehealth/close-room/{room_id}")
@@ -1089,7 +1091,7 @@ async def save_self_training_session(room_id: str, token: str, payload: Dict[str
         # Item 27: webhook payload must be built BEFORE commit/context
         # exit — see services/webhook.build_session_result_payload()
         # docstring for why.
-        webhook_payload = build_session_result_payload(sess)
+        webhook_payload = build_session_result_payload(sess, room_id=room.id)
         db.commit()
 
     # Outside the `with get_db()` block on purpose — same reasoning as
