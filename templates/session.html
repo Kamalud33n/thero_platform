@@ -1563,11 +1563,24 @@ async function saveSession() {
 
 // Actually performs the save + handles success/failure UI. Returns true/false.
 async function saveSessionPayload(payload) {
+    // Bridge doctor has no MedNova dashboard JWT — /api/sessions
+    // (get_current_therapist-gated) would 401, same reason endRemoteSession()
+    // above uses bridge-close-room instead of close-room. Use the
+    // token-authenticated bridge equivalent instead (Kamal, telehealth.py
+    // bridge_save_session), sending the room's token in the body the same
+    // way bridge-close-room already does.
+    const url  = isBridgeMode
+        ? `/api/telehealth/bridge-save-session/${bridgeRoomIdFromUrl}`
+        : '/api/sessions';
+    const body = isBridgeMode
+        ? { ...payload, token: bridgeTokenFromUrl }
+        : payload;
+
     try {
-        const res  = await fetch('/api/sessions', {
+        const res  = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type':'application/json' },
-            body: JSON.stringify(payload),
+            body: JSON.stringify(body),
         });
 
         if (!res.ok) {

@@ -15,7 +15,7 @@ from auth import verify_bridge_hmac
 from database import get_db
 from models import TelehealthRoom
 from repositories.patient_repo import get_or_create_patient_by_external_id
-from services.exercise_defs import EXERCISE_DEFS
+from services.exercise_defs import EXERCISE_DEFS, resolve_exercise_code
 from services.timeutils import utcnow
 from telehealth import BRIDGE_LINK_VALID_HOURS
 
@@ -62,6 +62,10 @@ async def bridge_create_session(payload: Dict[str, Any]):
     identity gap this doesn't yet resolve):
         consultation_id, patient_name, patient_external_id, exercise_type,
         affected_side, target_rom, target_reps, duration_seconds
+
+    target_rom and target_reps are REQUIRED unless exercise_type resolves
+    to a whole-body exercise (currently only BALANCE) — see the
+    is_whole_body_exercise check below.
     """
     consultation_id = payload.get("consultation_id")
     patient_name = payload.get("patient_name")
@@ -90,8 +94,46 @@ async def bridge_create_session(payload: Dict[str, Any]):
             "mednova_consultant_id is required — this field is not yet "
             "confirmed with Nada, see routers/bridge.py module docstring",
         )
-    if affected_side not in ("left", "right", "both"):
-        raise HTTPException(400, "affected_side must be one of: left, right, both")
+    # (affected_side validated further down — needs is_whole_body_exercise
+    # resolved first.)
+
+    # Resolved once, up front — both the affected_side exception below and
+    # the target_rom/target_reps requirement further down key off whether
+    # this exercise is "whole-body" (today: BALANCE — see
+    # services/exercise_defs.py, normal_range_deg=None marks "not an
+    # angle-based exercise", and BALANCE's own progress metric is
+    # duration_seconds/hold time, not a rep count or a side). Resolved via
+    # resolve_exercise_code() so this also handles a legacy display name
+    # or free-text exercise_type value the same way the rest of the
+    # codebase does, instead of a raw string comparison against "BALANCE".
+    resolved_code = resolve_exercise_code(exercise_type)
+    is_whole_body_exercise = EXERCISE_DEFS[resolved_code]["normal_range_deg"] is None
+
+    # affected_side has no meaning for a whole-body exercise (BALANCE) —
+    # there's no single limb/side being measured — so it's optional there
+    # and quietly defaults to "both" (matches TelehealthRoom.affected_side's
+    # own column default) when the caller omits it. Every other exercise
+    # type still requires an explicit left/right/both, same as before.
+    if is_whole_body_exercise:
+        if affected_side is None:
+            affected_side = "both"
+        elif affected_side not in ("left", "right", "both"):
+            raise HTTPException(400, "affected_side must be one of: left, right, both")
+    else:
+        if affected_side not in ("left", "right", "both"):
+            raise HTTPException(400, "affected_side must be one of: left, right, both")
+
+    if not is_whole_body_exercise:
+        if target_rom_raw is None:
+            raise HTTPException(
+                400,
+                f"target_rom is required for exercise_type '{exercise_type}'",
+            )
+        if target_reps_raw is None:
+            raise HTTPException(
+                400,
+                f"target_reps is required for exercise_type '{exercise_type}'",
+            )
 
     target_rom = None
     if target_rom_raw is not None:
@@ -104,7 +146,10 @@ async def bridge_create_session(payload: Dict[str, Any]):
 
     # Same optional/validated-if-present treatment as target_rom above —
     # doctor sets this in MedNovaCare's measurement form (Kamal's Task 1),
-    # not derived from anything Thero itself computes.
+    # not derived from anything Thero itself computes. Whether it's
+    # actually optional or required at this point was decided above
+    # (is_whole_body_exercise) — this block only handles type/value
+    # validation for whichever of the two it turned out to be.
     target_reps = None
     if target_reps_raw is not None:
         try:
@@ -113,6 +158,23 @@ async def bridge_create_session(payload: Dict[str, Any]):
             raise HTTPException(400, "target_reps must be a whole number")
         if target_reps <= 0:
             raise HTTPException(400, "target_reps must be greater than 0")
+
+    # duration_seconds — required for EVERY bridge session, including
+    # BALANCE (models.py TelehealthRoom docstring: "Nullable: remote/
+    # self_training don't currently set a target duration at scheduling
+    # time ... only bridge mode requires it"). Bridge rooms have no live
+    # doctor connection to set/adjust a target length later the way
+    # remote mode can, so this has to arrive up front — previously
+    # accepted whatever the caller sent (including nothing at all) with
+    # zero validation.
+    if duration_seconds is None:
+        raise HTTPException(400, "duration_seconds is required")
+    try:
+        duration_seconds = int(duration_seconds)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "duration_seconds must be a whole number")
+    if duration_seconds <= 0:
+        raise HTTPException(400, "duration_seconds must be greater than 0")
 
     now = utcnow()
     expires_at = now + datetime.timedelta(hours=BRIDGE_LINK_VALID_HOURS)

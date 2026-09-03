@@ -18,6 +18,7 @@ from services.camera_ws import CameraManager
 from services.timeutils import utcnow, utcnow_iso
 from services.helpers import (
     derive_session_summary_stats,
+    save_session_core,
     stamp as _stamp,
     client_message_version,
     check_client_protocol_version,
@@ -631,6 +632,65 @@ async def bridge_close_room(room_id: str, payload: Dict[str, Any]):
 
     await room_mgr.broadcast(room_id, {"type": "session_closed"})
     return JSONResponse({"success": True, "message": "Room closed"})
+
+
+@router.post("/api/telehealth/bridge-save-session/{room_id}")
+async def bridge_save_session(room_id: str, payload: Dict[str, Any]):
+    """
+    Bridge mode's equivalent of routers/sessions.py's save_session() —
+    lets a bridge client persist a full session payload (exercise_type,
+    affected_side, exercise_results[], joint_angles[], summary metrics,
+    ...; same shape POST /api/sessions accepts) without a therapist JWT.
+
+    Authenticated exactly like bridge_close_room right above: the room's
+    own token, not get_current_therapist/get_owned_room — a bridge doctor
+    has no MedNova dashboard JWT to satisfy that check, only the room
+    token (see auth.py's "Bridge-mode doctor access" note). Same 404-for-
+    everything shape as bridge_close_room (room missing, wrong mode, or
+    wrong token all look identical) so this can't be used to probe which
+    case it was.
+
+    patient_id is taken from room.patient_id, NEVER from the request
+    body: unlike the JWT path (assert_owns_patient(db,
+    payload["patient_id"], therapist) in routers/sessions.py), there is
+    no independent, server-verified identity behind a bridge caller — the
+    token only proves "this request knows this room's secret", not who
+    the patient is. Trusting a patient_id field in the body would let
+    that field silently reassign a session to any patient_id the caller
+    typed in. room.patient_id was already fixed at bridge-room creation
+    time, so it's the only trustworthy source here.
+
+    Shares the actual INSERT-or-UPDATE work with save_session via
+    services.helpers.save_session_core — see that function's docstring.
+    consultation_id/room_id are passed through so the results webhook
+    can carry them, same as save_self_training_session already does with
+    room_id.
+
+    Body: {"token": "<room.token>", ...same shape as POST /api/sessions...}
+    """
+    token = payload.get("token")
+    if not token:
+        raise HTTPException(400, "token is required")
+
+    with get_db() as db:
+        room = db.query(TelehealthRoom).filter(TelehealthRoom.id == room_id).first()
+        if not room or room.mode != "bridge" or room.token != token:
+            # Same shape of response either way as bridge_close_room above
+            # — don't let this endpoint be used to probe which case it was.
+            raise HTTPException(404, "Room not found")
+
+        sess, webhook_payload = save_session_core(
+            db, room.patient_id, payload,
+            consultation_id=room.consultation_id, room_id=room.id,
+        )
+        db.commit()
+
+    # Outside the `with get_db()` block on purpose — same reasoning as
+    # routers/sessions.py.save_session: the webhook's retry schedule must
+    # never delay this response back to the client.
+    asyncio.create_task(send_session_result_webhook(webhook_payload))
+
+    return JSONResponse({"success": True, "message": "Session saved", "session_id": sess.id})
 
 
 @router.get("/api/telehealth/turn-credentials")

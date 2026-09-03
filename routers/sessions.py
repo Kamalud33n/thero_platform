@@ -12,9 +12,10 @@ from auth import (
     issue_doctor_session_token,
 )
 from database import get_db
-from models import SessionModel, JointAngle, ExerciseResult, History, VALID_END_REASONS
+from models import SessionModel
 from repositories.patient_repo import assert_owns_patient
-from services.webhook import build_session_result_payload, send_session_result_webhook
+from services.helpers import save_session_core
+from services.webhook import send_session_result_webhook
 
 router = APIRouter()
 
@@ -155,211 +156,24 @@ async def get_sessions(
         return JSONResponse(out)
 
 
-def _resolve_end_reason(payload: Dict[str, Any]) -> str:
-    """
-    Item 24: finalize `end_reason` against the 7-value VALID_END_REASONS
-    set (models.py) — completed / stopped_by_patient / pain /
-    technical_error / disconnected / timeout / stopped_by_therapist.
-
-    The client (patient/therapist page) sends whichever button the person
-    actually pressed to end the session. We validate against
-    VALID_END_REASONS instead of trusting an arbitrary string, since this
-    is what reports/analytics will eventually group sessions by. Anything
-    missing or not in the allowed set falls back to "completed" — the
-    pre-existing behaviour for every client that finishes a session
-    normally and doesn't send this field at all (keeps this change
-    backward compatible with any caller that hasn't been updated yet).
-
-    NOTE: the old value "stopped" (pre-item-24 clarification) is no
-    longer valid and will fall back to "completed" here rather than
-    "stopped_by_patient" — we don't guess which of patient/therapist it
-    was for a legacy/unmigrated caller. Frontend callers still sending
-    "stopped" need updating to send "stopped_by_patient" explicitly
-    (pending patient.html/session.html wiring — not done yet).
-    """
-    reason = payload.get("end_reason")
-    if reason in VALID_END_REASONS:
-        return reason
-    return "completed"
-
-
-def _resolve_rep_counts(payload: Dict[str, Any], exercise_results_payload: list) -> tuple[int, int]:
-    """
-    🟡 Semantics NOT yet confirmed with Nada — see inline notes. This is a
-    safety-net derivation, not a verified business rule. Flagging clearly
-    so it isn't mistaken for a confirmed spec.
-
-    Previously total_reps/completed_reps were trusted verbatim from the
-    top-level payload with zero relationship check — a buggy/malicious
-    client could send completed_reps > total_reps, or numbers with no
-    connection to what actually happened in the session.
-
-    exercise_results[] (one row per rep, each with `is_completed`) is
-    already saved to the ExerciseResult table below — so when it's
-    present, it's real per-rep ground truth and is a stronger signal
-    than the two raw top-level ints:
-
-        total_reps     = number of rep records the client reported at all
-        completed_reps = number of those rows where is_completed == True
-
-    ASSUMPTION (needs confirmation): "completed" = met the rep's quality/
-    ROM bar, not just "attempted". If exercise_results[] isn't guaranteed
-    to be populated for every session type (e.g. self_training / telehealth
-    mode — unconfirmed), we fall back to the raw payload values, clamped
-    so completed_reps can never exceed total_reps.
-    """
-    if exercise_results_payload:
-        total_reps = len(exercise_results_payload)
-        completed_reps = sum(
-            1 for er in exercise_results_payload if er.get("is_completed")
-        )
-        return total_reps, completed_reps
-
-    # Fallback: no per-rep breakdown sent — trust the top-level ints but
-    # clamp so completed can never exceed total (the "safety clamp" that
-    # existed in spirit on the frontend but never enforced server-side).
-    total_reps = payload.get("total_reps", 0) or 0
-    completed_reps = payload.get("completed_reps", 0) or 0
-    completed_reps = max(0, min(completed_reps, total_reps))
-    return total_reps, completed_reps
-
-
 @router.post("/api/sessions")
 async def save_session(
     payload: Dict[str, Any],
     therapist: CurrentTherapist = Depends(get_current_therapist),
 ):
+    """
+    JWT-authenticated session save. The actual INSERT-or-UPDATE work is
+    shared with the bridge-token-authenticated
+    POST /api/telehealth/bridge-save-session/{room_id} (telehealth.py) via
+    services.helpers.save_session_core — this endpoint's own job is just
+    (a) authenticating the therapist and (b) proving they own `patient_id`
+    before any of that shared logic runs.
+    """
     with get_db() as db:
         pid = payload.get("patient_id")
         assert_owns_patient(db, pid, therapist)
 
-        def _dt(key):
-            v = payload.get(key)
-            if not v:
-                return None
-            # JS toISOString() emits a trailing 'Z', which Python 3.10's
-            # fromisoformat() can't parse directly (only 3.11+ supports it).
-            if v.endswith("Z"):
-                v = v[:-1] + "+00:00"
-            return datetime.datetime.fromisoformat(v)
-
-        exercise_results_payload = payload.get("exercise_results", [])
-        total_reps, completed_reps = _resolve_rep_counts(payload, exercise_results_payload)
-        end_reason = _resolve_end_reason(payload)
-
-        # If this finishing POST references a session_id that POST
-        # /api/sessions/start already created for this same patient and
-        # that's still "in_progress", UPDATE that row instead of inserting
-        # a second one — previously this endpoint always did a fresh
-        # INSERT, so any client that adopted the start/finish flow would
-        # end up with a duplicate row (an empty in_progress one + the real
-        # finished one). Legacy callers that never call /start (no
-        # session_id in the payload, or the id doesn't match an
-        # in_progress row of theirs) fall through to the old insert
-        # behaviour unchanged.
-        # Matches "in_progress" (the normal case) AND "abandoned" — the
-        # latter covers the race where the patient's /ws/pose socket
-        # disconnects and _abandon_if_unfinished() (routers/ws.py) already
-        # flipped this row to "abandoned" BEFORE this finishing POST
-        # arrives (e.g. tab closes right as the therapist's page submits
-        # the summary). Without "abandoned" here, that race caused this
-        # query to miss the row entirely and fall through to the INSERT
-        # branch below — creating a duplicate row for the same session_id
-        # while the original stayed stuck at status="abandoned" with
-        # whatever partial data the live pipeline had captured. The
-        # finishing POST is the explicit, authoritative "this session is
-        # over" signal from the therapist/patient client, so it should
-        # always win and update the one true row regardless of which of
-        # the two arrived first — never create a second row for a
-        # session_id that already exists.
-        existing_id = payload.get("session_id")
-        sess = None
-        if existing_id:
-            sess = (
-                db.query(SessionModel)
-                .filter(SessionModel.id == existing_id,
-                        SessionModel.patient_id == pid,
-                        SessionModel.status.in_(("in_progress", "abandoned")))
-                .first()
-            )
-
-        if sess is not None:
-            sess.exercise_type       = payload.get("exercise_type", sess.exercise_type)
-            sess.affected_side       = payload.get("affected_side", sess.affected_side)
-            sess.end_time            = _dt("end_time") or datetime.datetime.now()
-            sess.duration_seconds    = payload.get("duration_seconds", 0)
-            sess.total_reps          = total_reps
-            sess.completed_reps      = completed_reps
-            sess.accuracy_percentage = payload.get("accuracy_percentage", 0.0)
-            sess.average_rom         = payload.get("average_rom", 0.0)
-            sess.incorrect_movements = payload.get("incorrect_movements", 0)
-            sess.stability_score     = payload.get("stability_score", 0.0)
-            sess.balance_score       = payload.get("balance_score", 0.0)
-            sess.movement_smoothness = payload.get("movement_smoothness", 0.0)
-            sess.fatigue_estimation  = payload.get("fatigue_estimation", 0.0)
-            sess.recovery_score      = payload.get("recovery_score", 0.0)
-            sess.session_data        = payload.get("session_data", {})
-            sess.status              = "completed"
-            sess.end_reason          = end_reason
-        else:
-            sess = SessionModel(
-                patient_id          = pid,
-                exercise_type       = payload.get("exercise_type", "General Exercise"),
-                affected_side       = payload.get("affected_side", "both"),
-                start_time          = _dt("start_time") or datetime.datetime.now(),
-                end_time            = _dt("end_time"),
-                duration_seconds    = payload.get("duration_seconds", 0),
-                total_reps          = total_reps,
-                completed_reps      = completed_reps,
-                accuracy_percentage = payload.get("accuracy_percentage", 0.0),
-                average_rom         = payload.get("average_rom", 0.0),
-                incorrect_movements = payload.get("incorrect_movements", 0),
-                stability_score     = payload.get("stability_score", 0.0),
-                balance_score       = payload.get("balance_score", 0.0),
-                movement_smoothness = payload.get("movement_smoothness", 0.0),
-                fatigue_estimation  = payload.get("fatigue_estimation", 0.0),
-                recovery_score      = payload.get("recovery_score", 0.0),
-                session_data        = payload.get("session_data", {}),
-                status              = "completed",
-                end_reason          = end_reason,
-            )
-            db.add(sess)
-        db.flush()
-
-        for ja in payload.get("joint_angles", []):
-            db.add(JointAngle(
-                session_id   = sess.id,
-                joint_name   = ja.get("joint_name", "Unknown"),
-                angle_value  = ja.get("angle_value", 0.0),
-                target_angle = ja.get("target_angle"),
-                deviation    = ja.get("deviation"),
-                is_correct   = ja.get("is_correct", True),
-            ))
-
-        for er in exercise_results_payload:
-            db.add(ExerciseResult(
-                session_id         = sess.id,
-                exercise_name      = er.get("exercise_name", "Unknown"),
-                repetition_number  = er.get("repetition_number", 0),
-                accuracy           = er.get("accuracy", 0.0),
-                rom_achieved       = er.get("rom_achieved", 0.0),
-                speed              = er.get("speed", 0.0),
-                hold_duration      = er.get("hold_duration", 0.0),
-                compensation_score = er.get("compensation_score", 0.0),
-                is_completed       = er.get("is_completed", False),
-                feedback           = er.get("feedback", ""),
-            ))
-
-        db.add(History(
-            patient_id = pid,
-            action     = "Session Saved",
-            details    = f"Session {sess.id} — {sess.completed_reps}/{sess.total_reps} reps, ended: {sess.end_reason}",
-        ))
-
-        # Item 27: webhook payload must be built BEFORE commit/context
-        # exit — see build_session_result_payload() docstring for why
-        # (DetachedInstanceError otherwise).
-        webhook_payload = build_session_result_payload(sess)
+        sess, webhook_payload = save_session_core(db, pid, payload)
         db.commit()
 
     # Fired OUTSIDE the `with get_db()` block, on purpose: this session
