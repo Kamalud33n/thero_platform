@@ -183,4 +183,14 @@ async def save_session(
     # this response back to the client.
     asyncio.create_task(send_session_result_webhook(webhook_payload))
 
-    return JSONResponse({"success": True, "message": "Session saved", "session_id": sess.id})
+    # session_id read from webhook_payload, NOT sess.id — see
+    # telehealth.py's bridge_save_session / save_self_training_session
+    # for the full explanation: `sess` is detached once the `with
+    # get_db()` block above closes (db.close() + default
+    # expire_on_commit=True), so sess.id raises DetachedInstanceError
+    # here. webhook_payload was already snapshotted before commit.
+    return JSONResponse({
+        "success": True,
+        "message": "Session saved",
+        "session_id": webhook_payload["session_id"],
+    })

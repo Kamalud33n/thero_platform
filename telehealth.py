@@ -690,7 +690,19 @@ async def bridge_save_session(room_id: str, payload: Dict[str, Any]):
     # never delay this response back to the client.
     asyncio.create_task(send_session_result_webhook(webhook_payload))
 
-    return JSONResponse({"success": True, "message": "Session saved", "session_id": sess.id})
+    # session_id read from webhook_payload, NOT sess.id: `sess` is a
+    # SQLAlchemy instance that was detached when the `with get_db()`
+    # block above closed the session (db.close() + default
+    # expire_on_commit=True expire every attribute on commit). Touching
+    # sess.id here raised DetachedInstanceError -> 500 on every call.
+    # webhook_payload was already snapshotted into a plain dict before
+    # commit (see build_session_result_payload's docstring) specifically
+    # so it's safe to read after the session closes.
+    return JSONResponse({
+        "success": True,
+        "message": "Session saved",
+        "session_id": webhook_payload["session_id"],
+    })
 
 
 @router.get("/api/telehealth/turn-credentials")
@@ -1159,4 +1171,16 @@ async def save_self_training_session(room_id: str, token: str, payload: Dict[str
     # schedule must never delay this response back to the patient.
     asyncio.create_task(send_session_result_webhook(webhook_payload))
 
-    return JSONResponse({"success": True, "message": "Session saved", "session_id": sess.id})
+    # session_id read from webhook_payload, NOT sess.id: `sess` is a
+    # SQLAlchemy instance that was detached when the `with get_db()`
+    # block above closed the session (db.close() + default
+    # expire_on_commit=True expire every attribute on commit). Touching
+    # sess.id here raised DetachedInstanceError -> 500 on every call.
+    # webhook_payload was already snapshotted into a plain dict before
+    # commit (see build_session_result_payload's docstring) specifically
+    # so it's safe to read after the session closes.
+    return JSONResponse({
+        "success": True,
+        "message": "Session saved",
+        "session_id": webhook_payload["session_id"],
+    })
