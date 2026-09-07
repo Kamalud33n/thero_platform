@@ -379,6 +379,12 @@ async def get_room(room_id: str, token: str):
             raise HTTPException(404, "Room not found or invalid link")
         if room.status == "closed":
             raise HTTPException(410, "This session has ended")
+        # Bridge-only: routers/bridge.py's cancel-session sets this status,
+        # but until this check existed nothing on the join path actually
+        # enforced it — a doctor/patient with the link still open could
+        # join and run the session as if it had never been cancelled.
+        if room.status == "cancelled":
+            raise HTTPException(410, "This session was cancelled")
         if _room_expired(room):
             # Not "closed" in the DB (maybe nobody ever joined), but the
             # 2h window from scheduled_at has passed either way.
@@ -742,6 +748,15 @@ async def ws_signal(websocket: WebSocket, room_id: str, role: str, token: str):
             return
         if room.status == "closed":
             await websocket.close(code=4002)
+            return
+        # Same gap as get_room() above: cancel-session only flipped a DB
+        # field, this WS gate never checked for it, so a cancelled bridge
+        # room could still be joined and run end-to-end. code=4004 is a
+        # new custom close code (4000-4003 already used above) — session.html
+        # / patient.html should treat it as "session was cancelled", same
+        # as they'd treat a 410 from get_room().
+        if room.status == "cancelled":
+            await websocket.close(code=4004)
             return
         if _room_expired(room):
             await websocket.close(code=4003)

@@ -2553,6 +2553,19 @@ async function connectDoctorSignaling() {
             return;
         }
 
+        // code=4004: the room was cancelled (routers/bridge.py's
+        // cancel-session) between this page loading and the doctor
+        // clicking Join. Without this, it fell into the generic
+        // "unexpected drop" branch below and offered a Rejoin button —
+        // misleading, since rejoining a cancelled room just gets refused
+        // again at the same WS gate.
+        if (event.code === 4004) {
+            showToast('This session was cancelled.', 'error', 6000);
+            document.getElementById('statusText').textContent = 'Session cancelled';
+            document.getElementById('statusDot').className    = 'badge-dot error';
+            return;
+        }
+
         // Task 6: any OTHER close while the doctor didn't explicitly click
         // "End Session" is treated as an unexpected drop — accidental tab
         // navigation, network blip, laptop sleep — and gets a pinned
