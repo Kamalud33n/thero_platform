@@ -1270,7 +1270,19 @@ function updateBadge(id, label, angle, targetRom) {
 // startSession()/stopSession() drive now; Self Training records itself on
 // the patient's device via patient.html, no doctor timer involved)
 function startSession() {
-    if (!document.getElementById('sessionPatientSelect').value) {
+    // Bug fix (Sep 2026): .patient-selector is hidden in bridge mode
+    // (body.bridge-mode .patient-selector { display:none }) and
+    // joinBridgeRoom() never sets sessionPatientSelect.value — unlike
+    // joinRemoteRoom() which does. That meant this check ALWAYS failed
+    // for every bridge session, so Start Session could never succeed
+    // and sessionActive never became true, which in turn meant
+    // handlePoseData()'s `if (sessionActive)` block (reps, stability,
+    // smoothness, balance, fatigue, Live Analytics) never ran — this
+    // was the root cause of "Live Analysis shows nothing" in bridge
+    // mode. The patient is already known server-side (room.patient_id,
+    // set in routers/bridge.py's create-session), so this check is
+    // meaningless in bridge mode — skip it there.
+    if (!isBridgeMode && !document.getElementById('sessionPatientSelect').value) {
         showToast('Please select a patient', 'error'); return;
     }
     if (!isRemoteMode || !remotePatientConnected) {
