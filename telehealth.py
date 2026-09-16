@@ -188,14 +188,33 @@ class RoomManager:
 
     async def process_and_broadcast(self, room_id: str, raw_frame_b64: str):
         """Patient's raw camera frame -> CameraManager.process_frame() ->
-        annotated frame + pose_data -> broadcast to doctor AND patient, so
-        both sides see the same live skeleton/metrics overlay."""
+        pose_data -> broadcast to doctor AND patient.
+
+        This is the ONLY source of live metrics for the doctor's screen and
+        for the saved/webhooked session summary — see session.html's
+        'pose_data' handler.
+
+        No annotated JPEG is sent back any more: the doctor watches the
+        patient over WebRTC and draws the skeleton from these landmarks
+        (drawRemoteSkeleton), and the patient draws their own overlay
+        locally, so nobody ever rendered msg.frame. Encoding and shipping
+        a base64 JPEG to both sides at 10fps was pure waste — and on a
+        mobile patient connection it competed with the WebRTC stream.
+        """
         import base64
-        import cv2
+        import time
 
         camera = self.cameras.get(room_id)
         if camera is None:
             return
+
+        # Real backpressure accounting — note_arrival() must run on EVERY
+        # inbound frame (including skipped ones), which is what lets
+        # is_congested() tell "server too slow" apart from "browser
+        # sending too fast". ws_pose already did this; this path didn't,
+        # so the adaptive skip ratio here never moved off MIN_SKIP.
+        camera.note_arrival()
+
         if not camera.should_process() or not camera.fps_throttle():
             return
         try:
@@ -205,18 +224,34 @@ class RoomManager:
         frame = camera.decode_frame(raw)
         if frame is None:
             return
-        annotated, pose_data = camera.process_frame(frame)
-        if annotated is None:
-            return
-        success, buf = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 60])
-        if not success:
-            return
+
+        t0 = time.monotonic()
+        _annotated, pose_data = camera.process_frame(frame)
+        camera.note_processed(time.monotonic() - t0)
+
+        # pose_data is None when MediaPipe found no person in the frame.
+        # Still broadcast it: the doctor's handler turns an empty payload
+        # into "No pose detected — move into frame", which is real
+        # information. Swallowing it would leave the last good reading
+        # frozen on screen looking live.
         await self.broadcast(room_id, {
             "type":      "pose_data",
-            "frame":     base64.b64encode(buf).decode(),
-            "pose_data": pose_data,
+            "pose_data": pose_data or {},
             "ts":        utcnow_iso(),
         })
+
+        # Tell the patient's browser to ease off if we can't keep up.
+        if camera.should_send_backpressure_signal():
+            room = self.rooms.get(room_id) or {}
+            patient_ws = room.get("patient")
+            if patient_ws is not None:
+                try:
+                    await patient_ws.send_json(_stamp({
+                        "type": "backpressure",
+                        "recommended_fps": camera.recommended_client_fps(),
+                    }))
+                except Exception:
+                    pass
 
 
 room_mgr = RoomManager()
@@ -414,6 +449,17 @@ async def get_room(room_id: str, token: str):
             "patient_name":  patient.name if patient else "Patient",
             "exercise_type": room.exercise_type,
             "target_rom":    room.target_rom,
+            # affected_side / target_reps / duration_seconds were stored on
+            # the room (bridge create-session sends all three) but never
+            # returned here — so session.html's bridge join panel read
+            # room.affected_side as undefined and always printed "both",
+            # and the doctor's Exercise Configuration panel had nothing to
+            # populate itself from and sat on its HTML defaults (Shoulder
+            # Rehab / ROM 90 / 10 reps / 1 min) regardless of what MedNova
+            # actually requested.
+            "affected_side":    room.affected_side or "both",
+            "target_reps":      room.target_reps,
+            "duration_seconds": room.duration_seconds,
             "scheduled_at":  room.scheduled_at.isoformat(),
             "expires_at":    room.expires_at.isoformat(),
         })
@@ -771,6 +817,22 @@ async def ws_signal(websocket: WebSocket, room_id: str, role: str, token: str):
             room.started_at = utcnow()
             db.commit()
 
+        # Seed THIS room's server-side scoring camera from the room's own
+        # stored config, exactly like ws_pose does for solo sessions.
+        # Without this the CameraManager created in register() sat on its
+        # constructor defaults until (and unless) the doctor happened to
+        # change a dropdown — and in bridge mode the config is locked at
+        # create-session time, so the doctor never sends a change at all.
+        # That meant primary_angle/reps/accuracy were scored against the
+        # wrong exercise and the wrong target ROM.
+        cam = room_mgr.get_camera(room_id)
+        if cam is not None:
+            cam.metrics.set_exercise_state(
+                exercise_type=room.exercise_type,
+                target_rom=room.target_rom,
+            )
+            cam.metrics.set_affected_side(room.affected_side)
+
     # If the other side is already in the room, tell the socket that just
     # joined right away — this is what triggers the patient side to start
     # streaming frames without waiting for a fresh "peer_joined" event.
@@ -809,7 +871,14 @@ async def ws_signal(websocket: WebSocket, room_id: str, role: str, token: str):
                 await room_mgr.process_and_broadcast(room_id, data.get("data", ""))
                 continue
 
-            if role == "doctor" and msg_type == "set_exercise":
+            if role == "doctor" and msg_type in ("set_exercise", "session_config"):
+                # session.html's syncRemoteExerciseConfig() sends
+                # "session_config" (the patient page's own message name),
+                # never "set_exercise" — so this branch never fired from
+                # the real UI and the server-side scoring camera kept
+                # whatever exercise/ROM it was seeded with. Both names are
+                # accepted now; the relay below still forwards the message
+                # to the patient unchanged either way.
                 # Apply to THIS room's own server-side scoring camera —
                 # previously this only relayed to the patient's browser
                 # (below) and never reached room_mgr.cameras[room_id], so

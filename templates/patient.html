@@ -348,7 +348,7 @@ let rafId               = null;
 let usingVideoFrameCallback = false;   // requestVideoFrameCallback vs rAF fallback
 let micOn = true, camOn = true;
 let doctorAlreadyPresent = false;
-let metricsIntervalId  = null;
+let metricsIntervalId  = null;   // Self Training recording loop only (see startSelfTraining)
 let lastLandmarks       = null;
 
 // ───  Exercise config pushed by the doctor (session_config message) ──────
@@ -1155,111 +1155,98 @@ function computeAngles(lm) {
     return angles;
 }
 
-function startMetricsBroadcast() {
-    // Matches the in-clinic session page's /api/pose_data poll cadence
-    // (300ms) — live analytics (badges, reps, stability/smoothness/balance)
-    // update at the same cadence as an in-clinic session regardless of the
-    // device's video/detect tier.
-    metricsIntervalId = setInterval(() => {
-        if (!signalWs || signalWs.readyState !== WebSocket.OPEN) return;
+// ─── Frame push to the server-side scoring pipeline ────────────────────────
+// This REPLACES the old startMetricsBroadcast(), which computed reps /
+// stability / smoothness / balance in this page's own JS and shipped them to
+// the doctor as a 'pose_metrics' message every 300ms.
+//
+// Why it had to go: session.html no longer handles 'pose_metrics' at all —
+// it was deliberately switched to the server-computed 'pose_data' broadcast
+// (telehealth.py process_and_broadcast -> services/camera_ws.py
+// CameraManager.process_frame) so that the doctor's live numbers and the
+// numbers that end up in the saved session row + results webhook come from
+// ONE calculation. But nothing on this page was ever changed to feed that
+// pipeline: the server only computes when it receives {type:'frame'}, and
+// this page never sent one. The doctor's switch silently dropped every
+// 'pose_metrics' message, so Live Analysis sat at 0% / "No" for the whole
+// session and the webhook reported accuracy 0.0.
+//
+// So: push downscaled JPEG frames instead, at the rate the server's
+// CameraManager is built around (TARGET_FPS = 10), and let the server be the
+// single source of truth. The local MediaPipe Tasks detection loop stays
+// exactly as it was — it still draws this patient's own skeleton overlay,
+// and Self Training (no doctor on the other end) still scores itself locally
+// through startSelfTraining() below.
+const framePushCanvas = document.createElement('canvas');
+framePushCanvas.width  = 320;   // matches the resolution the server pipeline expects
+framePushCanvas.height = 240;
+const framePushCtx     = framePushCanvas.getContext('2d');
 
-        if (_isHandExercise(currentExerciseType)) {
-            if (!lastHandLandmarks) {
-                signalWs.send(JSON.stringify({
-                    type: 'pose_metrics', detected: false, angles: {}, points: {},
-                    exercise_type: currentExerciseType, ts: Date.now(),
-                }));
-                return;
-            }
+let framePushTimer = null;
+let framePushFps   = 10;        // server TARGET_FPS; lowered if the server signals backpressure
+let _framesPushed  = 0;
 
-            const angles       = computeFingerCurlAngles(lastHandLandmarks);
-            const primaryAngle = computePrimaryAngle(angles, currentExerciseType);
-            const reps         = updateRepCount(primaryAngle, currentTargetRom);
-            // Balance stays at its last value — no shoulder landmarks on a
-            // hands-only frame and there isn't a sensible hand-only stand-in
-            // for shoulder sway. Stability now uses wrist jitter instead of
-            // hip jitter, so it actually moves instead of sitting at 100.
-            updateHandStability(lastHandLandmarks);
-            const smoothness   = updateSmoothness(primaryAngle);
+function startFramePush() {
+    stopFramePush();
+    framePushTimer = setInterval(pushFrame, Math.round(1000 / framePushFps));
+}
 
-            if (reps > lastFatigueRepCount) {
-                recordRepQuality(primaryAngle, currentTargetRom);
-                lastFatigueRepCount = reps;
-            }
+function stopFramePush() {
+    if (framePushTimer) {
+        clearInterval(framePushTimer);
+        framePushTimer = null;
+    }
+}
 
-            const points = {};
-            Object.keys(HAND_LM_INDEX).forEach((name) => {
-                const p = lastHandLandmarks[HAND_LM_INDEX[name]];
-                if (p) points[name] = [+p.x.toFixed(4), +p.y.toFixed(4)];
-            });
+// Honors the server's 'backpressure' control message (see
+// CameraManager.should_send_backpressure_signal / recommended_client_fps):
+// when the server can't keep up, sending harder makes it worse, so throttle
+// to what it says it can sustain instead of letting frames pile up.
+function applyFramePushFps(fps) {
+    const next = Math.max(2, Math.min(10, Math.round(fps || 10)));
+    if (next === framePushFps) return;
+    framePushFps = next;
+    console.log(`Frame push throttled to ${framePushFps}fps (server backpressure)`);
+    if (framePushTimer) startFramePush();
+}
 
-            signalWs.send(JSON.stringify({
-                type: 'pose_metrics',
-                detected: true,
-                angles,
-                points,
-                exercise_type: currentExerciseType,
-                primary_angle: primaryAngle,
-                reps, stability: stabilityScore, smoothness, balance: balanceScore,
-                fatigue: fatigueScore,
-                ts: Date.now(),
-            }));
-            return;
-        }
+function pushFrame() {
+    if (!signalWs || signalWs.readyState !== WebSocket.OPEN) return;
+    // No doctor in the room = nobody consuming pose_data, so don't burn the
+    // patient's battery/bandwidth or the server's MediaPipe budget. Pushing
+    // resumes the moment the doctor joins (peer_joined / peer_already_present).
+    if (!doctorAlreadyPresent) return;
+    if (!localVideo || localVideo.readyState < 2) return;
+    if (!localVideo.videoWidth || !localVideo.videoHeight) return;
+    // Patient turned their camera off with the control-bar toggle — the track
+    // is disabled, so every frame would be a black rectangle scored as "no
+    // pose detected". Skip instead of poisoning the metrics with it.
+    if (!camOn) return;
 
-        if (!lastLandmarks) {
-            signalWs.send(JSON.stringify({ type: 'pose_metrics', detected: false, angles: {}, points: {}, ts: Date.now() }));
-            return;
-        }
+    // Draw the FULL captured frame downscaled into 320x240 (explicit source
+    // rect) rather than letting the browser center-crop, which is what made
+    // the old /ws/pose client look zoomed in.
+    framePushCtx.drawImage(
+        localVideo,
+        0, 0, localVideo.videoWidth, localVideo.videoHeight,
+        0, 0, framePushCanvas.width, framePushCanvas.height
+    );
 
-        const angles = computeAngles(lastLandmarks);
-        const primaryAngle = computePrimaryAngle(angles, currentExerciseType);
+    let base64;
+    try {
+        const dataUrl = framePushCanvas.toDataURL('image/jpeg', 0.7);
+        base64 = dataUrl.substring(dataUrl.indexOf(',') + 1);
+    } catch (e) {
+        console.warn('frame encode failed:', e);
+        return;
+    }
 
-        const reps       = updateRepCount(primaryAngle, currentTargetRom);
-        const stability  = updateStability(lastLandmarks);
-        const smoothness = updateSmoothness(primaryAngle);
-        const balance    = updateBalance(lastLandmarks);
-
-        if (reps > lastFatigueRepCount) {
-            recordRepQuality(primaryAngle, currentTargetRom);
-            lastFatigueRepCount = reps;
-        }
-
-        // Send raw normalized (0..1) landmark coords for the joints that are
-        // actually being drawn for this exercise, so the DOCTOR's screen can
-        // render the same connected-dots skeleton on top of the live WebRTC
-        // video — same joints, same filter logic as _get_active_connections
-        // in app.py / getActiveConnections() below. Only the active-joint
-        // subset is sent (not all 33 points) to keep the WS payload small at
-        // a 300ms cadence.
-        const activeConns = getActiveConnections(currentExerciseType);
-        const activeJointNames = new Set();
-        activeConns.forEach(([a, b]) => { activeJointNames.add(a); activeJointNames.add(b); });
-        const points = {};
-        activeJointNames.forEach((name) => {
-            const idx = LM_INDEX[name];
-            const p = lastLandmarks[idx];
-            if (p && (p.visibility == null || p.visibility >= 0.5)) {
-                points[name] = [+p.x.toFixed(4), +p.y.toFixed(4)];
-            }
-        });
-
-        signalWs.send(JSON.stringify({
-            type: 'pose_metrics',
-            detected: true,
-            angles,
-            points,
-            exercise_type: currentExerciseType,
-            primary_angle: primaryAngle,
-            reps, stability, smoothness, balance,
-            fatigue: fatigueScore,
-            ts: Date.now(),
-        }));
-    }, 300);
+    signalWs.send(JSON.stringify({ type: 'frame', data: base64 }));
+    _framesPushed++;
 }
 
 // ─── Self Training recording loop ──────────────────────────────────────────
-// Same cadence/math as startMetricsBroadcast() above, but there's no doctor
+// Same cadence/math the doctor-facing broadcast used to run at, but there's no doctor
 // on the other end — numbers are written straight into the on-screen HUD and
 // into selfTimeline, then averaged and POSTed once via finishSelfTraining().
 function startSelfTraining() {
@@ -1513,7 +1500,10 @@ function connectSignaling() {
     const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
     signalWs = new WebSocket(`${proto}://${window.location.host}/ws/signal/${ROOM_ID}?role=patient&token=${encodeURIComponent(TOKEN)}`);
 
-    signalWs.onopen = () => { setConn(false, 'Connected — waiting for doctor'); startMetricsBroadcast(); };
+    // startFramePush() is safe to call before the doctor arrives — pushFrame()
+    // no-ops until doctorAlreadyPresent flips true, then starts feeding the
+    // server pipeline without waiting for another event.
+    signalWs.onopen = () => { setConn(false, 'Connected — waiting for doctor'); startFramePush(); };
 
     signalWs.onmessage = async (event) => {
         const msg = JSON.parse(event.data);
@@ -1530,6 +1520,19 @@ function connectSignaling() {
                 break;
             case 'ice_candidate':
                 try { await peerConn.addIceCandidate(msg.candidate); } catch (e) { console.warn(e); }
+                break;
+            case 'backpressure':
+                // Server can't keep up with the current push rate — see
+                // CameraManager.recommended_client_fps().
+                applyFramePushFps(msg.recommended_fps);
+                break;
+            case 'pose_data':
+                // Server-side scoring result. This page draws its own
+                // overlay from its own local MediaPipe detection, so
+                // there's nothing to render here — the message is
+                // broadcast to both sides and is consumed by the doctor.
+                // Handled explicitly so it doesn't look like an unknown
+                // message type in the default branch below.
                 break;
             case 'peer_left':
                 if (msg.role === 'doctor') {
@@ -1557,10 +1560,17 @@ function connectSignaling() {
                 // tell this apart from a normal network drop.
                 _kickedByOtherDevice = true;
                 break;
+            default:
+                // Anything unrecognised is logged rather than silently
+                // dropped — a silently-dropped message type is exactly how
+                // the pose_metrics/pose_data mismatch stayed invisible.
+                console.warn('Unhandled signal message type:', msg.type);
         }
     };
 
     signalWs.onclose = (event) => {
+        // Socket is gone — nothing to push frames into.
+        stopFramePush();
         // Item 3: code 4010 = this exact same room link was opened in
         // another tab/device, and THIS connection is the one that got
         // replaced. Previously this looked identical to a plain network
@@ -1665,6 +1675,9 @@ function endSession(title, sub) {
     // tracks are stopped below (no more decoded frames -> no more callbacks).
     if (rafId) cancelAnimationFrame(rafId);
     if (metricsIntervalId) clearInterval(metricsIntervalId);
+    if (selfMetricsIntervalId) clearInterval(selfMetricsIntervalId);
+    if (selfElapsedTimer) clearInterval(selfElapsedTimer);
+    stopFramePush();
     if (localStream) localStream.getTracks().forEach(t => t.stop());
     if (peerConn) peerConn.close();
     if (signalWs) signalWs.close();
