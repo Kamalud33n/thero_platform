@@ -995,12 +995,15 @@
             <button class="btn-primary" onclick="closeResult()">
                 <i class="fas fa-redo"></i> New Session
             </button>
-            <button class="btn-secondary" onclick="window.location.href='/reports'">
+            <button class="btn-secondary" id="viewReportsBtn" onclick="window.location.href='/reports'">
                 <i class="fas fa-file-alt"></i> View Reports
             </button>
-            <button class="btn-secondary" onclick="window.location.href='/analytics'">
+            <button class="btn-secondary" id="viewAnalyticsBtn" onclick="window.location.href='/analytics'">
                 <i class="fas fa-chart-line"></i> Analytics
             </button>
+            <div class="bridge-result-note" id="bridgeResultNote" style="display:none; width:100%; text-align:center; color:#5a6b7c; font-size:13px; margin-top:8px;">
+                Results have been sent back to MedNova.
+            </div>
         </div>
     </div>
 </div>
@@ -1196,73 +1199,9 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 });
 
-
-// ─── Live-pipeline liveness: FPS readout + no-data watchdog ────────────────
-// The "Live Analysis shows nothing" class of bug (patient page not feeding
-// the server pose pipeline, doctor page dropping an unknown message type)
-// was invisible: the page looked like a running session with genuine-looking
-// 0% / 0° / "No" readings. These two mechanisms make it impossible to hide:
-//   * fpsDisplay now shows the ACTUAL rate of incoming pose_data (the
-//     element existed in the markup but nothing ever wrote to it, so it sat
-//     at "--" forever).
-//   * if a session is active and no pose_data arrives for LIVE_DATA_TIMEOUT_MS,
-//     the page says so out loud instead of silently reporting zeros.
-const LIVE_DATA_TIMEOUT_MS = 5000;
-let _liveFrameCount   = 0;
-let _lastLiveFrameAt  = 0;
-let _liveFpsTimer     = null;
-let _liveWarnShown    = false;
-
-function noteLiveFrame() {
-    _liveFrameCount++;
-    _lastLiveFrameAt = Date.now();
-    if (_liveWarnShown) {
-        _liveWarnShown = false;
-        document.getElementById('statusText').textContent = sessionActive ? 'Session Active' : 'Connected';
-        document.getElementById('statusDot').className    = sessionActive ? 'badge-dot recording' : 'badge-dot online';
-        showToast('Live analysis data resumed.', 'success', 3000);
-    }
-}
-
-function startLiveMonitor() {
-    stopLiveMonitor();
-    _liveFrameCount  = 0;
-    _lastLiveFrameAt = Date.now();
-    _liveWarnShown   = false;
-    _liveFpsTimer = setInterval(() => {
-        const fpsEl = document.getElementById('fpsDisplay');
-        if (fpsEl) fpsEl.textContent = _liveFrameCount ? String(_liveFrameCount) : '0';
-        _liveFrameCount = 0;
-
-        if (!sessionActive) return;
-        if (Date.now() - _lastLiveFrameAt > LIVE_DATA_TIMEOUT_MS && !_liveWarnShown) {
-            _liveWarnShown = true;
-            document.getElementById('statusText').textContent = 'No live analysis data';
-            document.getElementById('statusDot').className    = 'badge-dot error';
-            showToast('No pose data from the patient device — analytics are not being recorded. Ask the patient to reload their link.', 'error', 8000);
-            console.error('Live analysis watchdog: no pose_data received for >'
-                + LIVE_DATA_TIMEOUT_MS + 'ms while session is active.');
-        }
-    }, 1000);
-}
-
-function stopLiveMonitor() {
-    if (_liveFpsTimer) {
-        clearInterval(_liveFpsTimer);
-        _liveFpsTimer = null;
-    }
-    const fpsEl = document.getElementById('fpsDisplay');
-    if (fpsEl) fpsEl.textContent = '--';
-}
-
 // Pose data handler 
 function handlePoseData(data) {
     poseDetected = !!data.detected;
-
-    // Liveness bookkeeping — every pose_data message (detected or not)
-    // counts as "the pipeline is alive". noteLiveFrame() drives both the
-    // FPS readout and the no-data watchdog below.
-    noteLiveFrame();
 
     document.getElementById('noPoseWarning').style.display  = poseDetected ? 'none' : 'block';
     document.getElementById('detectionStatus').textContent  = poseDetected ? 'Yes' : 'No';
@@ -1313,12 +1252,7 @@ function handlePoseData(data) {
             if (data.smoothness != null) currentSmoothness = data.smoothness;
             if (data.balance    != null) currentBalance    = data.balance;
             if (data.fatigue    != null) currentFatigue    = data.fatigue;
-            // data.accuracy is the server's own rep-quality accuracy — the
-            // SAME number services/webhook.py sends to MedNova. Prefer it
-            // over the local rom/target ratio so the live screen and the
-            // webhook can't disagree; the ratio stays as a fallback for
-            // frames where the server hasn't scored a rep yet.
-            updateAnalytics(data.primary_angle, targetRom, data.accuracy);
+            updateAnalytics(data.primary_angle, targetRom);
         } catch (err) {
             console.error('Live Analytics update failed:', err, { data, targetRom, sessionActive });
         }
@@ -1358,11 +1292,8 @@ function startSession() {
         showToast('Start a Remote Session and wait for the patient to join first', 'error'); return;
     }
 
-    // Read custom duration if selected. Skipped in bridge mode: countdownTotal
-    // was already set to the EXACT duration_seconds MedNova requested, and
-    // re-deriving it from the (whole-minute) custom input would round e.g. a
-    // 90s request up to 120s.
-    const customBtn = isBridgeMode ? null : document.querySelector('.dur-btn[data-sec="0"].active');
+    // Read custom duration if selected
+    const customBtn = document.querySelector('.dur-btn[data-sec="0"].active');
     if (customBtn) {
         countdownTotal = Math.max(1, parseInt(document.getElementById('customDurInput').value||1)) * 60;
     }
@@ -1391,7 +1322,6 @@ function startSession() {
     document.getElementById('timerRing').classList.add('active');
 
     updateTimerRing();
-    startLiveMonitor();
 
     // Elapsed timer
     elapsedTimer = setInterval(() => {
@@ -1447,7 +1377,6 @@ function stopSession() {
     clearInterval(countdownTimer);
     clearInterval(elapsedTimer);
     clearInterval(_timelineTimer);
-    stopLiveMonitor();
 
     document.getElementById('startSessionBtn').style.display = 'inline-block';
     document.getElementById('stopSessionBtn').style.display  = 'none';
@@ -1481,13 +1410,10 @@ function updateTimerRing() {
 }
 
 // Analytics update (fully derived from real backend data, no Math.random) 
-function updateAnalytics(primaryAngle, targetRom, serverAccuracy = null) {
+function updateAnalytics(primaryAngle, targetRom) {
     if (primaryAngle != null && targetRom > 0) {
         currentRom      = Math.min(targetRom, Math.max(0, primaryAngle));
         currentAccuracy = Math.min(100, (currentRom / targetRom) * 100);
-    }
-    if (serverAccuracy != null) {
-        currentAccuracy = Math.min(100, Math.max(0, serverAccuracy));
     }
 
     const targetReps = parseInt(document.getElementById('targetReps').value);
@@ -1573,6 +1499,13 @@ function showResultModal() {
             interaction:{ intersect:false, mode:'index' }
         }
     });
+
+    // Bridge sessions: doctor has no full therapist login, so /reports and
+    // /analytics cannot authenticate. MedNova now renders the report itself
+    // from the results webhook payload, so point the doctor there instead.
+    document.getElementById("viewReportsBtn").style.display   = isBridgeMode ? "none" : "inline-block";
+    document.getElementById("viewAnalyticsBtn").style.display = isBridgeMode ? "none" : "inline-block";
+    document.getElementById("bridgeResultNote").style.display = isBridgeMode ? "block" : "none";
 
     document.getElementById('resultModal').classList.add('active');
 }
@@ -1764,7 +1697,6 @@ let remotePatientConnected = false;
 let isBridgeMode = false;
 let _remoteEndedIntentionally = false; // distinguishes "doctor clicked End Session" from an unexpected drop, for the rejoin banner below
 let bridgeRoomIdFromUrl = null;
-let _bridgeAffectedSide = null;   // from GET /api/telehealth/room — bridge mode only
 let bridgeTokenFromUrl  = null;
 
 // Reads ?bridge_room_id=&bridge_token= from the URL (see routers/bridge.py's
@@ -1773,77 +1705,6 @@ let bridgeTokenFromUrl  = null;
 // normal "Start a Remote Session or schedule Self Training" placeholder.
 // No-op (isBridgeMode stays false) when those params aren't present, so
 // this is safe to always call on every /session page load.
-// ─── Bridge mode: exercise config comes FROM the create-session request ────
-// Nada's Sep 13 decision: the 5 config fields (exercise_type, affected_side,
-// target_rom, target_reps, duration_seconds) are fixed at Create Session and
-// cannot be edited on the Start Session screen — to change one, Laravel
-// cancels the session and creates a new one.
-//
-// Until now nothing read them back: the panel kept its HTML defaults
-// (Shoulder Rehab / ROM 90 / 10 reps / 1 min), which is both wrong for the
-// doctor to look at AND actively harmful, because syncRemoteExerciseConfig()
-// pushes those same values to the server-side scoring camera the moment the
-// patient connects — so a Knee Rehab request could be scored as a shoulder
-// exercise against the wrong target ROM.
-function applyBridgeConfigToUI(room) {
-    _bridgeAffectedSide = room.affected_side || null;
-    const exSel = document.getElementById('exerciseType');
-    if (exSel && room.exercise_type) {
-        // The room's exercise_type may be a code/label that isn't one of the
-        // dropdown's own options (Laravel sends whatever thero's supported
-        // list gave them) — add it rather than silently falling back to the
-        // first option, which would be the wrong exercise.
-        const exists = Array.from(exSel.options).some(o => o.value === room.exercise_type);
-        if (!exists) {
-            const opt = document.createElement('option');
-            opt.value = opt.textContent = room.exercise_type;
-            exSel.appendChild(opt);
-        }
-        exSel.value = room.exercise_type;
-    }
-
-    const romEl = document.getElementById('targetRom');
-    if (romEl && room.target_rom != null) romEl.value = room.target_rom;
-
-    const repsEl = document.getElementById('targetReps');
-    if (repsEl && room.target_reps != null) repsEl.value = room.target_reps;
-
-    // Duration: match one of the preset buttons, otherwise drive the Custom
-    // input. countdownTotal is what startSession()'s timer actually counts
-    // down from, so it has to be set here too, not just the button styling.
-    const dur = room.duration_seconds;
-    if (dur != null && dur > 0) {
-        countdownTotal = dur;
-        const preset = document.querySelector(`.dur-btn[data-sec="${dur}"]`);
-        document.querySelectorAll('.dur-btn').forEach(b => b.classList.remove('active'));
-        if (preset) {
-            preset.classList.add('active');
-            document.getElementById('customDurWrap')?.classList.remove('show');
-        } else {
-            const customBtn = document.querySelector('.dur-btn[data-sec="0"]');
-            if (customBtn) customBtn.classList.add('active');
-            document.getElementById('customDurWrap')?.classList.add('show');
-            const customInput = document.getElementById('customDurInput');
-            if (customInput) customInput.value = Math.max(1, Math.round(dur / 60));
-        }
-    }
-
-    // Locked, per Nada — read-only rather than hidden, so the doctor can
-    // still SEE what was requested.
-    [exSel, romEl, repsEl, document.getElementById('customDurInput')].forEach(el => {
-        if (el) { el.disabled = true; el.title = 'Set by MedNova Care when this session was created'; }
-    });
-    document.querySelectorAll('.dur-btn').forEach(b => {
-        b.disabled = true;
-        b.style.cursor = 'not-allowed';
-        b.title = 'Set by MedNova Care when this session was created';
-    });
-
-    // Badge/angle-grid dimming follows the exercise, and the change event
-    // doesn't fire for a programmatic .value assignment.
-    applyActiveJointUI();
-}
-
 async function initBridgeMode() {
     const params = new URLSearchParams(location.search);
     const roomId = params.get('bridge_room_id');
@@ -1868,7 +1729,6 @@ async function initBridgeMode() {
         const room = await res.json();
         document.getElementById('bridgeJoinSummary').textContent =
             `${room.exercise_type || 'Exercise'} · Target ROM ${room.target_rom || '—'}° · ${room.affected_side || 'both'} side`;
-        applyBridgeConfigToUI(room);
     } catch (e) {
         console.error('initBridgeMode: room lookup failed', e);
         document.getElementById('bridgeJoinSummary').textContent =
@@ -2548,8 +2408,6 @@ async function retryDoctorCamera() {
 }
 
 // WebRTC (doctor is always the answerer — patient always offers) 
-let _legacyPoseMetricsWarned = false;
-
 async function connectDoctorSignaling() {
     let iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
     try {
@@ -2670,7 +2528,6 @@ async function connectDoctorSignaling() {
                     smoothness:    pd.smoothness,
                     balance:       pd.balance,
                     fatigue:       pd.fatigue,
-                    accuracy:      pd.accuracy,
                     primary_angle: pd.primary_angle,
                 });
 
@@ -2703,21 +2560,6 @@ async function connectDoctorSignaling() {
                 // clear message instead of looking like a normal drop.
                 _remoteKickedByOtherDevice = true;
                 break;
-            case 'pose_metrics':
-                // Legacy client-computed metrics from an OLD patient page
-                // still cached in someone's browser. The server pipeline is
-                // the single source of truth now (see 'pose_data' above), so
-                // these are deliberately not applied — but say so loudly
-                // instead of dropping them silently, which is exactly how
-                // this went unnoticed before.
-                if (!_legacyPoseMetricsWarned) {
-                    _legacyPoseMetricsWarned = true;
-                    console.warn('Received legacy pose_metrics — patient page is out of date (cached). Ask the patient to hard-reload their link.');
-                    showToast('Patient device is running an outdated page — ask them to reload their link.', 'error', 8000);
-                }
-                break;
-            default:
-                console.warn('Unhandled signal message type:', msg.type);
         }
     };
 
@@ -2766,10 +2608,6 @@ function remoteSendSignal(data) {
 }
 
 function onPatientConnected() {
-    // Start the FPS readout as soon as the patient's device is connected, so
-    // a dead pose pipeline is visible BEFORE the doctor clicks Start (the
-    // watchdog toast itself still only fires during an active session).
-    startLiveMonitor();
     remotePatientConnected = true;
     document.getElementById('remoteSetupView').style.display = 'none';
     document.getElementById('remoteLiveView').style.display  = 'block';
@@ -2786,10 +2624,6 @@ function onPatientConnected() {
 }
 
 function onPatientDisconnected() {
-    // No patient device = no frames = no pose_data. Stop the FPS/watchdog
-    // loop so it doesn't fire a "no pose data" toast on top of the
-    // "patient disconnected" state, which would be confusing noise.
-    stopLiveMonitor();
     remotePatientConnected = false;
     document.getElementById('remoteNoPatient').style.display = 'flex';
     document.getElementById('remoteLiveSub').textContent = 'Patient disconnected — waiting to reconnect...';
@@ -2818,19 +2652,10 @@ function onPatientLeavingReason(reason) {
 // ─── Push exercise/ROM config to the patient over the signaling channel so
 // their on-device rep counting uses the doctor's current selection ────────
 function syncRemoteExerciseConfig() {
-    // Consumed by BOTH the patient's browser (their own overlay thresholds)
-    // and, since the server-side handler now accepts this message name, the
-    // room's scoring CameraManager — which is what actually produces the
-    // reps/accuracy that get saved and webhooked.
     remoteSendSignal({
         type: 'session_config',
         exercise_type: document.getElementById('exerciseType')?.value || null,
         target_rom:    parseFloat(document.getElementById('targetRom')?.value) || 90,
-        // Bridge rooms carry affected_side from the create-session request;
-        // there's no control for it in this UI, so echo back what the room
-        // told us instead of leaving the server to guess. Ignored
-        // server-side when null (SessionMetrics.set_affected_side).
-        affected_side: _bridgeAffectedSide,
     });
 }
 
