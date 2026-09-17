@@ -1729,6 +1729,46 @@ async function initBridgeMode() {
         const room = await res.json();
         document.getElementById('bridgeJoinSummary').textContent =
             `${room.exercise_type || 'Exercise'} · Target ROM ${room.target_rom || '—'}° · ${room.affected_side || 'both'} side`;
+
+        // Bridge fields are locked read-only (see CSS above), but they were
+        // never being populated from the room's stored config — the session
+        // was silently running on the HTML's hardcoded defaults (Shoulder
+        // Rehab / 90° / 10 reps / 60s) instead of what MedNova actually sent
+        // at create-session. Apply the real values here before they're locked.
+        if (room.exercise_type) {
+            const exSelect = document.getElementById('exerciseType');
+            const match = Array.from(exSelect.options).find(o => o.value === room.exercise_type);
+            if (match) {
+                exSelect.value = room.exercise_type;
+            } else {
+                // MedNova sent a code/label with no matching <option> — add one
+                // so the locked dropdown still displays the real value instead
+                // of silently falling back to whatever option was first.
+                const opt = document.createElement('option');
+                opt.value = room.exercise_type;
+                opt.textContent = room.exercise_type;
+                exSelect.appendChild(opt);
+                exSelect.value = room.exercise_type;
+            }
+        }
+        if (room.target_reps != null) {
+            document.getElementById('targetReps').value = room.target_reps;
+        }
+        if (room.target_rom != null) {
+            document.getElementById('targetRom').value = room.target_rom;
+        }
+        if (room.duration_seconds != null) {
+            const sec = parseInt(room.duration_seconds);
+            const presetBtn = document.querySelector(`.dur-btn[data-sec="${sec}"]`);
+            if (presetBtn) {
+                selectDuration(presetBtn, sec);
+            } else {
+                const customBtn = document.querySelector('.dur-btn[data-sec="0"]');
+                document.getElementById('customDurInput').value = Math.round(sec / 60) || 1;
+                selectDuration(customBtn, sec);
+                countdownTotal = sec; // exact value, not rounded to whole minutes
+            }
+        }
     } catch (e) {
         console.error('initBridgeMode: room lookup failed', e);
         document.getElementById('bridgeJoinSummary').textContent =
