@@ -1026,6 +1026,9 @@ let currentSmoothness = 100;   //  real — from backend frame-jerk variance
 let currentBalance    = 100;   //  real — from backend shoulder-sway variance
 let currentFatigue    = 0;     //  real — from backend rep-quality decline trend
 let repCount         = 0;
+let _lastServerReps  = 0;   // latest cumulative rep count from the server camera
+let _repBaseline     = 0;   // server count at the moment Start was pressed
+let _autoEnding      = false; // guards against firing stopSession() twice
 
 let poseDetected     = false;
 
@@ -1245,14 +1248,24 @@ function handlePoseData(data) {
     // Reps, stability, smoothness, balance, fatigue now ALL come straight
     // from the backend (real MediaPipe computation — no Math.random, no
     // metric copied from another metric)
+    if (data.reps != null) _lastServerReps = data.reps;
     if (sessionActive) {
         try {
-            repCount = data.reps != null ? data.reps : repCount;
+            if (data.reps != null) repCount = Math.max(0, data.reps - _repBaseline);
             if (data.stability  != null) currentStability  = data.stability;
             if (data.smoothness != null) currentSmoothness = data.smoothness;
             if (data.balance    != null) currentBalance    = data.balance;
             if (data.fatigue    != null) currentFatigue    = data.fatigue;
             updateAnalytics(data.primary_angle, targetRom);
+
+            // Doctor-set rep target reached -> end + save (same path as the
+            // countdown hitting zero).
+            const tgtReps = parseInt(document.getElementById('targetReps').value);
+            if (!_autoEnding && tgtReps > 0 && repCount >= tgtReps) {
+                _autoEnding = true;
+                showToast('🎯 Target reps reached! Session ending...', 'success');
+                stopSession();
+            }
         } catch (err) {
             console.error('Live Analytics update failed:', err, { data, targetRom, sessionActive });
         }
@@ -1303,6 +1316,8 @@ function startSession() {
     countdownLeft    = countdownTotal;
     elapsedSec       = 0;
     repCount = currentAccuracy = currentRom = 0;
+    _repBaseline = _lastServerReps;   // server counter isn't reset on Start
+    _autoEnding  = false;
     currentStability  = 100;
     currentSmoothness = 100;
     currentBalance    = 100;
@@ -1370,7 +1385,7 @@ function startSession() {
     showToast('Session started!', 'success');
 }
 
-function stopSession() {
+async function stopSession() {
     if (!sessionActive) return;
     sessionActive = false;
 
@@ -1387,7 +1402,11 @@ function stopSession() {
     document.getElementById('timerRing').classList.remove('active');
     document.getElementById('remainingTimer').textContent    = '--:--';
 
-    saveSession();
+    // saveSession() builds its payload synchronously from current state, so
+    // the result modal can open right away; but the room must NOT be closed
+    // until the save request has finished -- otherwise bridge-close-room races
+    // it and the server also saves its own copy (duplicate session + webhook).
+    const savePromise = saveSession();
     showResultModal();
 
     // If this was a remote (telehealth) session, closing the exercise
@@ -1395,6 +1414,7 @@ function stopSession() {
     // patient shouldn't stay connected indefinitely just because the
     // doctor forgot to click "End Remote Session" manually.
     if (isRemoteMode && remoteRoomId) {
+        try { await savePromise; } catch (e) { console.error('save before close failed:', e); }
         endRemoteSession(true);
     }
 }

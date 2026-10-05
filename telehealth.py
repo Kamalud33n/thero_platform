@@ -731,10 +731,27 @@ async def bridge_save_session(room_id: str, payload: Dict[str, Any]):
             # — don't let this endpoint be used to probe which case it was.
             raise HTTPException(404, "Room not found")
 
+        # One room = one saved session. If bridge-close-room already ran
+        # _finalize_remote_session (or an earlier save/retry already landed),
+        # room.session_id is set -- don't insert + webhook a second row for
+        # the same room. Same first-writer-wins rule _finalize_remote_session
+        # uses on its side. (No `await` between this check and the commit
+        # below, so on a single uvicorn worker it can't interleave.)
+        if room.session_id:
+            return JSONResponse({
+                "success": True,
+                "message": "Session already saved",
+                "session_id": room.session_id,
+            })
+
         sess, webhook_payload = save_session_core(
             db, room.patient_id, payload,
             consultation_id=room.consultation_id, room_id=room.id,
         )
+        # save_session_core already flushed, so sess.id exists. Linking it
+        # makes a later bridge-close-room's _finalize_remote_session see
+        # "already saved" and no-op instead of creating a duplicate.
+        room.session_id = sess.id
         db.commit()
 
     # Outside the `with get_db()` block on purpose — same reasoning as
