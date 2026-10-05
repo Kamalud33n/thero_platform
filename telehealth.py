@@ -101,6 +101,13 @@ class RoomManager:
         # come back in time. Cancelled the moment the doctor reconnects
         # (see register() below) or the room ends for any other reason.
         self.doctor_grace_tasks: Dict[str, asyncio.Task] = {}
+        # Auto-complete: per-room cache of the session's targets
+        # (target_reps / duration_seconds / started_at), loaded once from
+        # the DB on the first frame — see _check_auto_complete().
+        self.limits: Dict[str, Dict[str, Any]] = {}
+        # Rooms already being auto-closed, so a burst of frames can't
+        # trigger the close twice.
+        self.auto_closing: set = set()
 
     def cancel_doctor_grace(self, room_id: str):
         task = self.doctor_grace_tasks.pop(room_id, None)
@@ -155,6 +162,9 @@ class RoomManager:
             cam = self.cameras.pop(room_id, None)
             if cam is not None:
                 cam.stop()
+            # Room is fully gone — drop its auto-complete bookkeeping too.
+            self.limits.pop(room_id, None)
+            self.auto_closing.discard(room_id)
 
     def get_camera(self, room_id: str) -> Optional[CameraManager]:
         return self.cameras.get(room_id)
@@ -618,6 +628,67 @@ async def _finalize_remote_session(db, room: TelehealthRoom, default_end_reason:
     )
 
 
+# ── Auto-complete: close the room when target reps / duration is reached ──
+# Called after every patient frame in ws_signal. Only rooms that actually
+# have a target_reps and/or duration_seconds (today: bridge rooms) can
+# trigger it — for remote/self_training rooms both are NULL, so the check
+# is a no-op after a single cached DB read.
+async def _check_auto_complete(room_id: str):
+    if room_id in room_mgr.auto_closing:
+        return
+    cam = room_mgr.get_camera(room_id)
+    if cam is None:
+        return
+
+    lim = room_mgr.limits.get(room_id)
+    if lim is None:
+        # First frame for this room — read the targets once and cache them
+        # so the following frames don't hit the DB.
+        with get_db() as db:
+            r = db.query(TelehealthRoom).filter(TelehealthRoom.id == room_id).first()
+            if not r:
+                return
+            lim = {
+                "target_reps":      r.target_reps,
+                "duration_seconds": r.duration_seconds,
+                "started_at":       r.started_at,
+            }
+        room_mgr.limits[room_id] = lim
+
+    reason = None
+    if lim["target_reps"] and cam.metrics.get_rep_count() >= lim["target_reps"]:
+        reason = "target_reps_reached"
+    elif (lim["duration_seconds"] and lim["started_at"]
+          and (utcnow() - lim["started_at"]).total_seconds() >= lim["duration_seconds"]):
+        reason = "duration_reached"
+
+    if reason:
+        await _auto_complete_room(room_id, reason)
+
+
+async def _auto_complete_room(room_id: str, reason: str):
+    if room_id in room_mgr.auto_closing:
+        return
+    room_mgr.auto_closing.add(room_id)
+
+    webhook_payload = None
+    with get_db() as db:
+        r = db.query(TelehealthRoom).filter(TelehealthRoom.id == room_id).first()
+        if r and r.status != "closed":
+            webhook_payload = await _finalize_remote_session(db, r, default_end_reason="completed")
+            r.status    = "closed"
+            r.closed_at = utcnow()
+            db.commit()
+
+    if webhook_payload:
+        asyncio.create_task(send_session_result_webhook(webhook_payload))
+
+    # "reason" tells patient.html / session.html WHY it closed
+    # (target_reps_reached | duration_reached) instead of the generic
+    # "doctor ended this session" text.
+    await room_mgr.broadcast(room_id, {"type": "session_closed", "reason": reason})
+
+
 @router.post("/api/telehealth/close-room/{room_id}")
 async def close_room(
     room_id: str,
@@ -886,6 +957,10 @@ async def ws_signal(websocket: WebSocket, room_id: str, role: str, token: str):
                 # pipeline -> annotated frame + pose_data broadcast to
                 # both doctor and patient.
                 await room_mgr.process_and_broadcast(room_id, data.get("data", ""))
+                # After the frame is scored, see whether the room's target
+                # reps / duration has now been reached — if so this
+                # finalizes, closes and broadcasts session_closed.
+                await _check_auto_complete(room_id)
                 continue
 
             if role == "doctor" and msg_type in ("set_exercise", "session_config"):

@@ -274,7 +274,9 @@
         </div>
 
         <!-- Self Training only — rep/accuracy/timer readout + Finish button.
-             Shown instead of the doctor-pip when ROOM_MODE === 'self_training'. -->
+             Shown instead of the doctor-pip when ROOM_MODE === 'self_training'.
+             Also reused in remote/bridge mode (see startLimitsHud()) to show
+             the doctor's target reps + a time-left countdown. -->
         <div class="st-hud" id="stHud" style="display:none">
             <div class="st-chip"><div class="st-val" id="stReps">0/0</div><div class="st-lbl">Reps</div></div>
             <div class="st-chip"><div class="st-val" id="stAccuracy">0%</div><div class="st-lbl">Accuracy</div></div>
@@ -322,6 +324,14 @@ import { PoseLandmarker, HandLandmarker, FilesetResolver }
 const ROOM_ID = "{{ room_id }}";
 const TOKEN   = new URLSearchParams(window.location.search).get('token') || '';
 let ROOM_MODE = 'remote';   // 'remote' | 'self_training' — set from GET /api/telehealth/room in init()
+
+// Doctor-set session targets (bridge mode) — read from GET /api/telehealth/room
+// in init(). Shown on the patient's HUD by startLimitsHud(); the SERVER is
+// still the one that actually closes the session when either is reached
+// (telehealth.py _check_auto_complete), this is display only.
+let ROOM_TARGET_REPS = null;   // target rep count, or null if none was set
+let ROOM_DURATION    = null;   // planned session length in seconds, or null
+let limitTimerId     = null;   // countdown interval for the "Time left" chip
 
 // Self Training only state — patient exercises alone, no doctor socket/call.
 // Reuses the exact same rep/stability/smoothness/balance math as Remote mode
@@ -755,6 +765,9 @@ function drawFilteredSkeleton(lm, exerciseType, isHand = false) {
         const room = await res.json();
         ROOM_MODE = room.mode || 'remote';
         if (room.exercise_type) currentExerciseType = room.exercise_type;
+        // Doctor-set targets (bridge mode) — shown on the HUD by startLimitsHud().
+        ROOM_TARGET_REPS = room.target_reps || null;
+        ROOM_DURATION    = room.duration_seconds || null;
 
         if (ROOM_MODE === 'self_training') {
             document.querySelector('.patient-brand span').textContent = 'MedNova Self Training';
@@ -1313,6 +1326,15 @@ function startSelfTraining() {
             bal: balanceScore,
             fat: fatigueScore,
         });
+
+        // Target reached -> finish automatically (saves with end_reason
+        // 'completed') instead of waiting for the patient to tap "Finish".
+        // doFinishSelfTraining() flips selfActive to false and clears this
+        // interval, so this only ever fires once.
+        if (selfActive && repCount >= SELF_TARGET_REPS) {
+            doFinishSelfTraining('completed');
+            return;
+        }
     }, 300);
 }
 
@@ -1503,7 +1525,13 @@ function connectSignaling() {
     // startFramePush() is safe to call before the doctor arrives — pushFrame()
     // no-ops until doctorAlreadyPresent flips true, then starts feeding the
     // server pipeline without waiting for another event.
-    signalWs.onopen = () => { setConn(false, 'Connected — waiting for doctor'); startFramePush(); };
+    // startLimitsHud() shows the doctor's target reps + a time-left countdown
+    // (bridge mode); it does nothing when no targets were set.
+    signalWs.onopen = () => {
+        setConn(false, 'Connected — waiting for doctor');
+        startFramePush();
+        startLimitsHud();
+    };
 
     signalWs.onmessage = async (event) => {
         const msg = JSON.parse(event.data);
@@ -1544,7 +1572,20 @@ function connectSignaling() {
                 }
                 break;
             case 'session_closed':
-                endSession('Session Ended', 'Your doctor has ended this session. Thank you!');
+                // msg.reason tells us WHY the server closed the room:
+                //   target_reps_reached / duration_reached -> auto-complete
+                //   (telehealth.py _check_auto_complete)
+                //   doctor_disconnected -> doctor never came back in time
+                //   anything else / none -> doctor pressed End Session
+                if (msg.reason === 'target_reps_reached') {
+                    endSession('Session Complete', 'You completed all your reps. Great work!');
+                } else if (msg.reason === 'duration_reached') {
+                    endSession('Session Complete', "Time's up. Great work!");
+                } else if (msg.reason === 'doctor_disconnected') {
+                    endSession('Session Ended', 'Your doctor did not reconnect, so this session was closed.');
+                } else {
+                    endSession('Session Ended', 'Your doctor has ended this session. Thank you!');
+                }
                 break;
             case 'session_config':
                 // Doctor picked/changed an exercise — use it for our own
@@ -1587,6 +1628,52 @@ function connectSignaling() {
 
 function sendSignal(data) {
     if (signalWs && signalWs.readyState === WebSocket.OPEN) signalWs.send(JSON.stringify(data));
+}
+
+// ─── Doctor-set targets HUD (remote / bridge mode) ─────────────────────────
+// Reuses the Self Training chip row (#stHud) to show the doctor's target rep
+// count and a "Time left" countdown. Display only — the server decides when
+// the session is actually over and sends 'session_closed' (see above).
+// Does nothing if the room has neither target_reps nor duration_seconds
+// (ordinary remote rooms today), and never touches Self Training, which has
+// its own HUD logic in startSelfTraining().
+function startLimitsHud() {
+    if (ROOM_MODE === 'self_training') return;
+    if (!ROOM_TARGET_REPS && !ROOM_DURATION) return;
+
+    document.getElementById('stHud').style.display = 'flex';
+    // Live accuracy isn't computed on this page in remote mode — hide it.
+    document.getElementById('stAccuracy').parentElement.style.display = 'none';
+
+    const repsChip  = document.getElementById('stReps').parentElement;
+    const timerChip = document.getElementById('stTimer').parentElement;
+
+    if (ROOM_TARGET_REPS) {
+        document.getElementById('stReps').textContent = ROOM_TARGET_REPS;
+        repsChip.querySelector('.st-lbl').textContent = 'Target reps';
+    } else {
+        repsChip.style.display = 'none';
+    }
+
+    if (!ROOM_DURATION) {
+        timerChip.style.display = 'none';
+        return;
+    }
+    timerChip.querySelector('.st-lbl').textContent = 'Time left';
+
+    let remaining = ROOM_DURATION;
+    const render = () => {
+        const m = String(Math.floor(remaining / 60)).padStart(2, '0');
+        const s = String(remaining % 60).padStart(2, '0');
+        document.getElementById('stTimer').textContent = `${m}:${s}`;
+    };
+    render();
+    if (limitTimerId) clearInterval(limitTimerId);
+    limitTimerId = setInterval(() => {
+        remaining = Math.max(0, remaining - 1);
+        render();
+        if (remaining === 0) clearInterval(limitTimerId);
+    }, 1000);
 }
 
 // ─── Stop-reason sheet ──────────────────────────────────────────────────
@@ -1677,6 +1764,7 @@ function endSession(title, sub) {
     if (metricsIntervalId) clearInterval(metricsIntervalId);
     if (selfMetricsIntervalId) clearInterval(selfMetricsIntervalId);
     if (selfElapsedTimer) clearInterval(selfElapsedTimer);
+    if (limitTimerId) clearInterval(limitTimerId);
     stopFramePush();
     if (localStream) localStream.getTracks().forEach(t => t.stop());
     if (peerConn) peerConn.close();
