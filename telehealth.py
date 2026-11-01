@@ -108,6 +108,12 @@ class RoomManager:
         # Rooms already being auto-closed, so a burst of frames can't
         # trigger the close twice.
         self.auto_closing: set = set()
+        # Rooms whose DOCTOR has actually pressed Start Session. The room
+        # goes "live" (started_at stamped) the moment the patient connects,
+        # but exercise timing / rep targets must only count from the
+        # doctor's Start — see _start_room_session(). In-memory on purpose,
+        # same lifetime as the room's CameraManager.
+        self.session_started: set = set()
 
     def cancel_doctor_grace(self, room_id: str):
         task = self.doctor_grace_tasks.pop(room_id, None)
@@ -165,6 +171,7 @@ class RoomManager:
             # Room is fully gone — drop its auto-complete bookkeeping too.
             self.limits.pop(room_id, None)
             self.auto_closing.discard(room_id)
+            self.session_started.discard(room_id)
 
     def get_camera(self, room_id: str) -> Optional[CameraManager]:
         return self.cameras.get(room_id)
@@ -636,6 +643,10 @@ async def _finalize_remote_session(db, room: TelehealthRoom, default_end_reason:
 async def _check_auto_complete(room_id: str):
     if room_id in room_mgr.auto_closing:
         return
+    # Nothing counts (target reps OR duration) until the doctor has pressed
+    # Start Session — patient joining alone must not start the clock.
+    if room_id not in room_mgr.session_started:
+        return
     cam = room_mgr.get_camera(room_id)
     if cam is None:
         return
@@ -664,6 +675,38 @@ async def _check_auto_complete(room_id: str):
 
     if reason:
         await _auto_complete_room(room_id, reason)
+
+
+async def _start_room_session(room_id: str) -> bool:
+    """Doctor pressed Start Session. This (not the patient connecting) is
+    when the exercise clock begins: re-stamp started_at so the saved
+    start_time/duration and the duration auto-close count from here, zero
+    the room's metrics so pre-start movement doesn't count toward reps /
+    target_reps, and mark the room started. Idempotent — a second Start
+    (e.g. doctor refreshed and pressed it again) is ignored. If the doctor
+    never presses Start, started_at stays at the patient's join time, so
+    the abandoned/disconnected webhook still fires (Nada: webhook in ALL
+    end states, even 0 reps)."""
+    if room_id in room_mgr.session_started or room_id in room_mgr.auto_closing:
+        return False
+    now = utcnow()
+    with get_db() as db:
+        r = db.query(TelehealthRoom).filter(TelehealthRoom.id == room_id).first()
+        if not r or r.status != "live":
+            return False
+        r.started_at = now
+        db.commit()
+        lim = {
+            "target_reps":      r.target_reps,
+            "duration_seconds": r.duration_seconds,
+            "started_at":       now,
+        }
+    cam = room_mgr.get_camera(room_id)
+    if cam is not None:
+        cam.metrics.reset()
+    room_mgr.limits[room_id] = lim
+    room_mgr.session_started.add(room_id)
+    return True
 
 
 async def _auto_complete_room(room_id: str, reason: str):
@@ -986,6 +1029,15 @@ async def ws_signal(websocket: WebSocket, room_id: str, role: str, token: str):
                         target_rom=data.get("target_rom"),
                     )
                     cam.metrics.set_affected_side(data.get("affected_side"))
+
+            if role == "doctor" and msg_type == "session_start":
+                # Authoritative start: server stamps the time, then tells
+                # BOTH sides ("session_started") so the patient's countdown
+                # and the doctor's rep baseline begin together. Not relayed
+                # raw — the ack below replaces it.
+                if await _start_room_session(room_id):
+                    await room_mgr.broadcast(room_id, {"type": "session_started"})
+                continue
 
             if role == "patient" and msg_type == "patient_leaving":
                 # Item 5: stash the patient's own reported reason so the

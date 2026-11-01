@@ -1328,6 +1328,8 @@ function startSession() {
     // device — just push the current exercise/ROM config to them so their
     // thresholds match what the doctor selected.
     syncRemoteExerciseConfig();
+    // Tell the server (and through it the patient) the exercise clock starts NOW.
+    remoteSendSignal({ type: 'session_start' });
 
     document.getElementById('startSessionBtn').style.display = 'none';
     document.getElementById('stopSessionBtn').style.display  = 'inline-block';
@@ -2476,6 +2478,11 @@ async function connectDoctorSignaling() {
     } catch (e) { console.warn('TURN fetch failed, using STUN only:', e); }
 
     remotePeerConn = new RTCPeerConnection({ iceServers });
+    // Queue ICE candidates that arrive before the offer has been applied —
+    // addIceCandidate() without a remote description throws and the
+    // candidate used to be lost (see the 'offer' / 'ice_candidate' cases).
+    let pendingIce = [];
+    const pc = remotePeerConn;
 
     const localStream = await getRemoteLocalMedia();
     if (localStream) localStream.getTracks().forEach(t => remotePeerConn.addTrack(t, localStream));
@@ -2532,14 +2539,20 @@ async function connectDoctorSignaling() {
             case 'peer_joined':
                 if (msg.role === 'patient') onPatientConnected();
                 break;
-            case 'offer':
-                await remotePeerConn.setRemoteDescription(new RTCSessionDescription(msg.sdp));
-                const answer = await remotePeerConn.createAnswer();
-                await remotePeerConn.setLocalDescription(answer);
+            case 'offer': {
+                await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+                const queued = pendingIce; pendingIce = [];
+                for (const c of queued) {
+                    try { await pc.addIceCandidate(c); } catch (e) { console.warn('queued addIceCandidate failed:', e); }
+                }
+                const answer = await pc.createAnswer();
+                await pc.setLocalDescription(answer);
                 remoteSendSignal({ type: 'answer', sdp: answer });
                 break;
+            }
             case 'ice_candidate':
-                try { await remotePeerConn.addIceCandidate(msg.candidate); } catch (e) { console.warn(e); }
+                if (!pc.remoteDescription) { pendingIce.push(msg.candidate); break; }
+                try { await pc.addIceCandidate(msg.candidate); } catch (e) { console.warn(e); }
                 break;
             case 'pose_data': {
                 // Single source of truth fix: this is the SERVER-side
@@ -2598,6 +2611,12 @@ async function connectDoctorSignaling() {
                 drawRemoteSkeleton(points, exerciseType);
                 break;
             }
+            case 'session_started':
+                // Server has zeroed this room's metrics (first Start only) —
+                // drop the baseline taken at click time so reps read 0-based.
+                _repBaseline = 0;
+                _lastServerReps = 0;
+                break;
             case 'peer_left':
                 if (msg.role === 'patient') onPatientDisconnected();
                 break;

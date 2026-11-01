@@ -1479,6 +1479,7 @@ async function initPeerConnection() {
     } catch (e) { console.warn('TURN fetch failed, using STUN only:', e); }
 
     peerConn = new RTCPeerConnection({ iceServers });
+    pendingIce = [];
     localStream.getTracks().forEach(track => peerConn.addTrack(track, localStream));
 
     // Apply device-tier-based encoding limits right after tracks are added,
@@ -1512,6 +1513,44 @@ async function initPeerConnection() {
     };
 }
 
+// ICE candidates can arrive while setRemoteDescription() is still awaiting
+// (each signal message runs in its own async handler). addIceCandidate()
+// before the remote description exists throws and the candidate was being
+// dropped by the catch — so queue until it's set, then flush.
+let pendingIce = [];
+async function addRemoteIce(candidate) {
+    if (!peerConn || !peerConn.remoteDescription) { pendingIce.push(candidate); return; }
+    try { await peerConn.addIceCandidate(candidate); } catch (e) { console.warn('addIceCandidate failed:', e); }
+}
+async function flushPendingIce() {
+    const queued = pendingIce; pendingIce = [];
+    for (const c of queued) {
+        try { await peerConn.addIceCandidate(c); } catch (e) { console.warn('queued addIceCandidate failed:', e); }
+    }
+}
+
+// Doctor (re)joined. If this peer connection already negotiated once (doctor
+// refreshed / Retry Camera / opened the room again), the doctor's side is a
+// brand-new RTCPeerConnection with new DTLS/ICE credentials — renegotiating
+// the old one can't work, so build a fresh connection before offering.
+// Previously the `doctorAlreadyPresent` guard swallowed that peer_joined and
+// no new offer was ever sent, so the doctor saw no video.
+let _offering = false;
+async function offerToDoctor() {
+    if (_offering) return;
+    _offering = true;
+    try {
+        if (peerConn && peerConn.localDescription) {
+            try { peerConn.close(); } catch (e) {}
+            await initPeerConnection();
+        }
+        doctorAlreadyPresent = true;
+        await createAndSendOffer();
+    } finally {
+        _offering = false;
+    }
+}
+
 async function createAndSendOffer() {
     const offer = await peerConn.createOffer();
     await peerConn.setLocalDescription(offer);
@@ -1538,16 +1577,14 @@ function connectSignaling() {
         switch (msg.type) {
             case 'peer_already_present':
             case 'peer_joined':
-                if (msg.role === 'doctor' && !doctorAlreadyPresent) {
-                    doctorAlreadyPresent = true;
-                    await createAndSendOffer();
-                }
+                if (msg.role === 'doctor') await offerToDoctor();
                 break;
             case 'answer':
                 await peerConn.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+                await flushPendingIce();
                 break;
             case 'ice_candidate':
-                try { await peerConn.addIceCandidate(msg.candidate); } catch (e) { console.warn(e); }
+                await addRemoteIce(msg.candidate);
                 break;
             case 'backpressure':
                 // Server can't keep up with the current push rate — see
@@ -1561,6 +1598,9 @@ function connectSignaling() {
                 // broadcast to both sides and is consumed by the doctor.
                 // Handled explicitly so it doesn't look like an unknown
                 // message type in the default branch below.
+                break;
+            case 'session_started':
+                if (!limitTimerId) startLimitsHud(true);
                 break;
             case 'peer_left':
                 if (msg.role === 'doctor') {
@@ -1637,7 +1677,7 @@ function sendSignal(data) {
 // Does nothing if the room has neither target_reps nor duration_seconds
 // (ordinary remote rooms today), and never touches Self Training, which has
 // its own HUD logic in startSelfTraining().
-function startLimitsHud() {
+function startLimitsHud(startCountdown = false) {
     if (ROOM_MODE === 'self_training') return;
     if (!ROOM_TARGET_REPS && !ROOM_DURATION) return;
 
@@ -1668,6 +1708,9 @@ function startLimitsHud() {
         document.getElementById('stTimer').textContent = `${m}:${s}`;
     };
     render();
+    // Remote/bridge: show the full time up front, but only COUNT DOWN once
+    // the doctor presses Start (server 'session_started').
+    if (!startCountdown) return;
     if (limitTimerId) clearInterval(limitTimerId);
     limitTimerId = setInterval(() => {
         remaining = Math.max(0, remaining - 1);
