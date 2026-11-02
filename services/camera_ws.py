@@ -11,7 +11,7 @@ from config import pose as _pose, mp_drawing as _mp_drawing
 from config import mp_drawing_styles as _mp_drawing_styles
 from config import POSE_CONNECTIONS as _POSE_CONNECTIONS
 from config import KEY_LANDMARKS as _KEY_LANDMARKS
-from config import get_angle as _get_angle
+from config import get_angle_2d as _get_angle, set_frame_size as _set_frame_size
 from config import hands as _hands, HAND_CONNECTIONS as _HAND_CONNECTIONS
 from services import metrics as _metrics
 from services.exercise_defs import is_hand_exercise as _is_hand_exercise
@@ -162,6 +162,15 @@ class CameraManager:
         if frame is None:
             return frame, None
 
+        # Angles are computed in pixel space (config.get_angle*), so tell it
+        # this frame's size first - without it the normalised x/y are
+        # stretched on a non-square frame and every angle is off.
+        try:
+            _fh, _fw = frame.shape[:2]
+            _set_frame_size(_fw, _fh)
+        except Exception:
+            pass
+
         active_exercise, target_rom = self.metrics.get_exercise_state()
         if _is_hand_exercise(active_exercise):
             return self._process_hand_frame(frame, active_exercise, target_rom)
@@ -219,6 +228,12 @@ class CameraManager:
             if len(lm) > 26:
                 angles["l_hip"]      = round(_get_angle(lm[11], lm[23], lm[25]), 1)
                 angles["r_hip"]      = round(_get_angle(lm[12], lm[24], lm[26]), 1)
+            if len(lm) > 32:
+                # Ankle (knee-ankle-foot_index) - needed for ANKLE_DORSIFLEXION,
+                # same landmarks NovaMotion uses. Was never computed here, so
+                # ankle exercises had no angle and never counted a rep.
+                angles["l_ankle"]    = round(_get_angle(lm[25], lm[27], lm[31]), 1)
+                angles["r_ankle"]    = round(_get_angle(lm[26], lm[28], lm[32]), 1)
         except Exception:
             pass
 
@@ -235,9 +250,13 @@ class CameraManager:
         # counts reps, while `angles` above still carries both l_/r_
         # readings every frame regardless of side.
         affected_side = self.metrics.get_affected_side()
+        # Same order as NovaMotion: stability first (the per-rep window
+        # averages the live stability/smoothness values), primary_angle is
+        # ROM (see metrics.angle_to_rom), then reps + per-joint ranges.
+        stability  = self.metrics.update_stability(lm)
         primary_angle = _metrics.compute_primary_angle(angles, active_exercise, affected_side)
         reps       = self.metrics.update_rep_count(primary_angle, target_rom)
-        stability  = self.metrics.update_stability(lm)
+        self.metrics.update_joint_angles(angles, active_exercise, affected_side)
         smoothness = self.metrics.update_smoothness(primary_angle)
         balance    = self.metrics.update_balance(lm)
         fatigue    = self.metrics.maybe_record_rep_quality(reps, primary_angle, target_rom)
@@ -267,6 +286,9 @@ class CameraManager:
         pose_data["balance_score"]       = balance
         pose_data["fatigue_estimation"]  = fatigue
         pose_data["accuracy_percentage"] = accuracy
+        # Per-rep results (rep_scores / rep_details / rep_live / rep_incomplete),
+        # same keys NovaMotion sends to its live page.
+        pose_data.update(self.metrics.get_rep_scoring())
         return annotated, pose_data
 
     def _process_hand_frame(self, frame, active_exercise: str, target_rom: float):
@@ -296,8 +318,13 @@ class CameraManager:
         # is stateful (rep counter), so it goes through this connection's
         # own metrics instance.
         finger_angles = _metrics.compute_finger_curl_angles(lm0)
+        # Stability for a hands-only frame = wrist steadiness (no hips in
+        # this frame) - same as NovaMotion.
+        stability = self.metrics.update_stability_point(lm0[0].x, lm0[0].y)
         primary_angle = _metrics.compute_primary_angle(finger_angles, active_exercise)
         reps = self.metrics.update_rep_count(primary_angle, target_rom)
+        self.metrics.update_joint_angles(finger_angles, active_exercise)
+        smoothness = self.metrics.update_smoothness(primary_angle)
         # Hand-grip path never called maybe_record_rep_quality() before —
         # so the rep-quality buffer (fatigue's source, and now accuracy's
         # source too) was never populated for hand exercises at all.
@@ -324,6 +351,11 @@ class CameraManager:
         # compute those (no hip landmarks in a hands-only frame).
         pose_data["fatigue_estimation"]  = fatigue
         pose_data["accuracy_percentage"] = accuracy
+        pose_data["stability"]           = stability
+        pose_data["smoothness"]          = smoothness
+        pose_data["stability_score"]     = stability
+        pose_data["movement_smoothness"] = smoothness
+        pose_data.update(self.metrics.get_rep_scoring())
         return annotated, pose_data
 
 

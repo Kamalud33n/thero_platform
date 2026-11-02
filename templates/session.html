@@ -1020,6 +1020,7 @@ let elapsedTimer     = null;
 let elapsedSec       = 0;
 
 let currentAccuracy   = 0;
+let liveRepScore      = null;   // server per-rep score (rep in progress, or last finished rep)
 let currentRom        = 0;
 let currentStability  = 0;
 let currentSmoothness = 100;   //  real — from backend frame-jerk variance
@@ -1256,6 +1257,11 @@ function handlePoseData(data) {
             if (data.smoothness != null) currentSmoothness = data.smoothness;
             if (data.balance    != null) currentBalance    = data.balance;
             if (data.fatigue    != null) currentFatigue    = data.fatigue;
+            // Live score of the rep in progress; once it ends the server
+            // freezes it at that rep's final score (falls back to the last
+            // finished rep between reps).
+            if (data.rep_live != null) liveRepScore = data.rep_live;
+            else if (Array.isArray(data.rep_scores) && data.rep_scores.length) liveRepScore = data.rep_scores[data.rep_scores.length - 1];
             updateAnalytics(data.primary_angle, targetRom);
 
             // Doctor-set rep target reached -> end + save (same path as the
@@ -1272,13 +1278,24 @@ function handlePoseData(data) {
     }
 }
 
+// Joint angle -> how far the joint has MOVED from neutral (mirrors
+// metrics.angle_to_rom on the backend, same as NovaMotion). Shoulder angle
+// grows as the arm rises; elbow/knee/hip angles are ~180deg when straight and
+// shrink as they flex, so movement = 180 - angle. Badge colours must use this,
+// otherwise a resting straight leg (170deg) shows green against a 90deg target.
+function romFromAngle(id, angle) {
+    if (angle == null) return null;
+    if (String(id).toLowerCase().includes('shoulder')) return Math.max(0, angle);
+    return Math.max(0, 180 - angle);
+}
+
 function updateBadge(id, label, angle, targetRom) {
     const el  = document.getElementById(id);
     if (!el) return;
     const val = angle != null ? Math.round(angle) : null;
     el.innerHTML = `<i class="fas fa-circle" style="font-size:7px"></i> ${label}: ${val!=null?val+'°':'--°'}`;
     if (val == null) return;
-    const pct = val / targetRom;
+    const pct = romFromAngle(id, val) / (targetRom > 0 ? targetRom : 90);
     el.className = 'pose-badge ' + (pct >= 0.85 ? 'green' : pct >= 0.6 ? 'orange' : 'red');
 }
 
@@ -1316,6 +1333,7 @@ function startSession() {
     countdownLeft    = countdownTotal;
     elapsedSec       = 0;
     repCount = currentAccuracy = currentRom = 0;
+    liveRepScore = null;
     _repBaseline = _lastServerReps;   // server counter isn't reset on Start
     _autoEnding  = false;
     currentStability  = 100;
@@ -1433,16 +1451,24 @@ function updateTimerRing() {
 
 // Analytics update (fully derived from real backend data, no Math.random) 
 function updateAnalytics(primaryAngle, targetRom) {
-    if (primaryAngle != null && targetRom > 0) {
+    if (!(targetRom > 0)) targetRom = 90;   // empty/invalid target ROM used to give NaN% bars
+    if (primaryAngle != null) {
+        // primary_angle from the server is already ROM (movement from neutral).
         currentRom      = Math.min(targetRom, Math.max(0, primaryAngle));
-        currentAccuracy = Math.min(100, (currentRom / targetRom) * 100);
+        // Accuracy = score of the rep in progress (or of the last finished
+        // rep), scored per rep on the server: 60% range + 20% stability +
+        // 20% smoothness. Same as NovaMotion - nothing is averaged over time.
+        currentAccuracy = liveRepScore != null ? liveRepScore : 0;
+    } else if ((document.getElementById('exerciseType')?.value || '').toLowerCase().includes('balance')) {
+        // Balance has no joint angle / ROM: scored on steadiness only.
+        currentAccuracy = Math.min(100, (currentStability + currentBalance) / 2);
     }
 
     const targetReps = parseInt(document.getElementById('targetReps').value);
     document.getElementById('accuracyDisplay').textContent   = `${Math.round(currentAccuracy)}%`;
     document.getElementById('accuracyProgress').style.width  = `${currentAccuracy}%`;
     document.getElementById('romDisplay').textContent        = `${Math.round(currentRom)}°`;
-    document.getElementById('romProgress').style.width       = `${(currentRom/targetRom)*100}%`;
+    document.getElementById('romProgress').style.width       = `${Math.min(100, (currentRom/targetRom)*100)}%`;
     document.getElementById('stabilityDisplay').textContent  = `${Math.round(currentStability)}%`;
     document.getElementById('stabilityProgress').style.width = `${currentStability}%`;
     document.getElementById('repCounter').textContent        = `${repCount} / ${targetReps}`;
@@ -1537,6 +1563,7 @@ function closeResult() {
     if (resultChartInst) { resultChartInst.destroy(); resultChartInst=null; }
     // Reset UI
     currentAccuracy=currentRom=currentStability=repCount=elapsedSec=0;
+    liveRepScore = null;
     currentSmoothness=100; currentBalance=100; currentFatigue=0;
     document.getElementById('sessionTimer').textContent    = '00:00';
     document.getElementById('remainingTimer').textContent  = '--:--';
@@ -2585,6 +2612,7 @@ async function connectDoctorSignaling() {
                     'stability', 'smoothness', 'balance', 'fatigue', 'accuracy',
                     'stability_score', 'movement_smoothness', 'balance_score',
                     'fatigue_estimation', 'accuracy_percentage',
+                    'rep_scores', 'rep_details', 'rep_live', 'rep_live_rom', 'rep_incomplete',
                 ]);
                 const points = {};
                 Object.keys(pd).forEach((name) => {
@@ -2602,6 +2630,8 @@ async function connectDoctorSignaling() {
                     balance:       pd.balance,
                     fatigue:       pd.fatigue,
                     primary_angle: pd.primary_angle,
+                    rep_scores:    pd.rep_scores,
+                    rep_live:      pd.rep_live,
                 });
 
                 // pose_data itself doesn't carry exercise_type (server

@@ -141,6 +141,14 @@ _LEGACY_DISPLAY_NAME_MAP = {
     "hand grip":         "HAND_GRIP",
     "finger flexion":    "HAND_GRIP",
     "grip strength":     "HAND_GRIP",
+    # Names offered by session.html's exercise dropdown (and NovaMotion's).
+    # They were missing, so e.g. "Elbow Rehab" / "Knee Rehab" / "Hip Rehab"
+    # silently resolved to SHOULDER_FLEXION and the server scored the
+    # SHOULDER angle for an elbow/knee/hip exercise.
+    "elbow rehab":       "ELBOW_FLEXION",
+    "knee rehab":        "KNEE_FLEXION",
+    "hip rehab":         "HIP_FLEXION",
+    "leg rehab":         "KNEE_FLEXION",
 }
 
 

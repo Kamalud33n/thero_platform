@@ -1,5 +1,6 @@
 import os
 import sys
+import threading
 import types
 import json as _json
 import warnings
@@ -126,9 +127,44 @@ KEY_LANDMARKS = {
 }
 
 
+# Frame size used to un-normalise landmark coords in get_angle*(). MediaPipe
+# gives x/y as fractions of the frame width/height, so on a non-square frame
+# (e.g. 640x480 or 1280x720) the raw normalised vectors are stretched and the
+# angle comes out wrong. Same fix as NovaMotion. It is thread-local because
+# each frame is processed start-to-finish on ONE worker thread, while other
+# rooms' frames (possibly different resolutions) run on other threads - a
+# plain global would let them overwrite each other's size mid-frame.
+# Defaults to 1.0 x 1.0 (= old behaviour) until set_frame_size() is called.
+_frame_size = threading.local()
+
+
+def set_frame_size(w: int, h: int):
+    if w and h:
+        _frame_size.w, _frame_size.h = float(w), float(h)
+
+
+def _wh():
+    return getattr(_frame_size, "w", 1.0), getattr(_frame_size, "h", 1.0)
+
+
 def get_angle(p1, p2, p3) -> float:
-    a = np.array([p1.x - p2.x, p1.y - p2.y, p1.z - p2.z])
-    b = np.array([p3.x - p2.x, p3.y - p2.y, p3.z - p2.z])
+    """3D joint angle (used for finger curl). x/y/z are scaled to pixels."""
+    w, h = _wh()
+    a = np.array([(p1.x - p2.x) * w, (p1.y - p2.y) * h, (p1.z - p2.z) * w])
+    b = np.array([(p3.x - p2.x) * w, (p3.y - p2.y) * h, (p3.z - p2.z) * w])
+    na, nb = np.linalg.norm(a), np.linalg.norm(b)
+    if na == 0 or nb == 0:
+        return 0.0
+    return float(np.degrees(np.arccos(np.clip(np.dot(a, b) / (na * nb), -1.0, 1.0))))
+
+
+def get_angle_2d(p1, p2, p3) -> float:
+    """2D joint angle in the image plane (used for body joints). MediaPipe's
+    z is the least reliable axis for a single webcam, so ignoring it gives a
+    steadier angle - this is what NovaMotion uses for pose joints."""
+    w, h = _wh()
+    a = np.array([(p1.x - p2.x) * w, (p1.y - p2.y) * h])
+    b = np.array([(p3.x - p2.x) * w, (p3.y - p2.y) * h])
     na, nb = np.linalg.norm(a), np.linalg.norm(b)
     if na == 0 or nb == 0:
         return 0.0
