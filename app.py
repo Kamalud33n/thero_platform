@@ -5,6 +5,7 @@ import datetime
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 
 from database import get_db, init_db
 from models import Patient, SessionModel, JointAngle, Setting
@@ -21,7 +22,23 @@ from routers import sessions, camera, ws, reports, analytics, patients, pages, b
 init_db()  # creates all tables (and the MySQL database itself, if missing)
 
 # ─── FastAPI app 
-app = FastAPI(title="Rehabilitation AI System", version="2.2.0")
+# Bridge-only mode (default ON): thero runs ONLY what the MedNova Care bridge
+# flow needs — the doctor /session page, the patient /join page, telehealth
+# (room + signalling WS), and /api/bridge/*. Everything else (patient CRUD,
+# analytics, reports, local-camera dev endpoints, /api/sessions/*, /ws/pose,
+# dashboard pages, /uploads) is NOT registered, so those paths return 404 and
+# there is nothing reachable for a pen-tester to probe. Also turns off
+# /docs, /redoc and /openapi.json, which would otherwise list every route.
+# Set THERO_BRIDGE_ONLY=false for local/in-clinic dev to get the full app back.
+BRIDGE_ONLY = os.getenv("THERO_BRIDGE_ONLY", "true").lower() == "true"
+
+app = FastAPI(
+    title="Rehabilitation AI System",
+    version="2.2.0",
+    docs_url=None if BRIDGE_ONLY else "/docs",
+    redoc_url=None if BRIDGE_ONLY else "/redoc",
+    openapi_url=None if BRIDGE_ONLY else "/openapi.json",
+)
 
 # allow_origins=["*"] together with allow_credentials=True is insecure once
 # JWTs are carried in the Authorization header — a wildcard origin + credentials
@@ -44,23 +61,30 @@ app.add_middleware(
 )
 
 app.mount("/static",  StaticFiles(directory="static"),  name="static")
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+if not BRIDGE_ONLY:
+    app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 app.mount("/assets",  StaticFiles(directory="assets"),  name="assets")
 
 app.include_router(telehealth_router)   # includes /join/{room_id} (patient page) + telehealth API/WS
-app.include_router(sessions.router)     # /api/sessions/* — engine-facing, async-only
-app.include_router(camera.router)       # local-only MJPEG dev camera, gated by LOCAL_CAMERA_ENABLED
-app.include_router(ws.router)           # /ws/pose — landmarks-only pipeline
-app.include_router(reports.router)      # /api/reports/* — PDF session report generate + download
-app.include_router(analytics.router)    # /api/analytics — today/yesterday/trend dashboard data
-app.include_router(patients.router)     # /api/patients/* — patient CRUD (backs patients.html)
-app.include_router(pages.router)        # /, /patients, /session, /reports, /analytics — dashboard UI pages
 # /api/bridge/* — MedNova Care's Laravel backend calls these server-to-server
-# for the consultation-time "measurement request" feature. BLOCKED from real
-# traffic until Nada answers the open questions in routers/bridge.py's module
-# docstring (mednova_consultant_id field name, patient age/gender, bridge
-# secret scheme) — wired up now so it's ready the moment she does.
+# (HMAC-signed, see auth.verify_bridge_hmac) for the consultation-time
+# "measurement request" feature.
 app.include_router(bridge.router)
+
+if BRIDGE_ONLY:
+    # The bridge therapist_url is /session?bridge_room_id=...&bridge_token=...
+    # (routers/bridge.py), so that single page route must stay. The other
+    # dashboard pages (/, /patients, /reports, /analytics) are not registered.
+    app.add_api_route("/session", pages.page_session, methods=["GET"],
+                      response_class=HTMLResponse)
+else:
+    app.include_router(sessions.router)     # /api/sessions/* — engine-facing, async-only
+    app.include_router(camera.router)       # local-only MJPEG dev camera, gated by LOCAL_CAMERA_ENABLED
+    app.include_router(ws.router)           # /ws/pose — landmarks-only pipeline
+    app.include_router(reports.router)      # /api/reports/* — PDF session report generate + download
+    app.include_router(analytics.router)    # /api/analytics — today/yesterday/trend dashboard data
+    app.include_router(patients.router)     # /api/patients/* — patient CRUD (backs patients.html)
+    app.include_router(pages.router)        # /, /patients, /session, /reports, /analytics — dashboard UI pages
 
 
 #Startup seed
@@ -150,6 +174,10 @@ async def seed():
 # Health check
 @app.get("/api/health")
 async def health():
+    if BRIDGE_ONLY:
+        # Liveness only — don't leak WS counts, camera state or MediaPipe
+        # status to unauthenticated callers.
+        return {"status": "healthy"}
     # camera_running used to be one global flag (single shared camera).
     # Now every /ws/pose connection owns its own CameraManager, so "is a
     # camera running" is answered per-session — ws_sessions_active is how
